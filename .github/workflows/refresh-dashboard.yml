@@ -22,15 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python deps
-        run: pip install pandas snowflake-connector-python requests pydantic
-
-      - name: Write Snowflake connections.toml
-        env:
-          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
-        run: |
-          mkdir -p ~/.snowflake
-          printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
-          chmod 600 ~/.snowflake/connections.toml
+        run: pip install pandas requests pydantic
 
       - name: Fetch HubSpot deals
         env:

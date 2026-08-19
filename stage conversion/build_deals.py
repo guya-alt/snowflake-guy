@@ -158,6 +158,9 @@ class Deal(BaseModel):
     deal_type_name: Optional[str] = None
     team_id: Optional[str] = None
     team_name: Optional[str] = None
+    geo: Optional[str] = None
+    mega_source: Optional[str] = None
+    deal_source: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     qualified_date: Optional[str] = None
@@ -191,6 +194,9 @@ class Deal(BaseModel):
             deal_type_name=DEAL_TYPES.get(deal_type_id, deal_type_id) if deal_type_id else None,
             team_id=team_id,
             team_name=TEAMS.get(team_id, team_id) if team_id else None,
+            geo=props.get("geography") or None,
+            mega_source=props.get("mega_source") or None,
+            deal_source=props.get("deal_source") or None,
             created_at=raw["createdAt"],
             updated_at=raw["updatedAt"],
             qualified_date=props.get("qualified_date"),
@@ -242,6 +248,9 @@ def deals_to_dataframe(deals: list[Deal]) -> pd.DataFrame:
             "stage": d.stage_name,
             "deal_type": d.deal_type_name,
             "team": d.team_name,
+            "geo": d.geo,
+            "mega_source": d.mega_source,
+            "deal_source": d.deal_source,
             "created_at": d.created_at,
             "updated_at": d.updated_at,
             "qualified_date": d.qualified_date,

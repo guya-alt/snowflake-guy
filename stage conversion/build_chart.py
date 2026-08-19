@@ -8,7 +8,6 @@ import os
 from datetime import datetime, timezone
 
 import pandas as pd
-import snowflake.connector
 
 from build_deals import (
     CLASSIC_STAGE_ORDER,
@@ -64,7 +63,9 @@ def load_data():
     all_ts_df = ts_df[ts_df["deal_id"].isin(all_deals_df["deal_id"])].reset_index(drop=True)
 
     merged_all = all_ts_df.merge(
-        all_deals_df[["deal_id", "amount", "qualified_date"]], on="deal_id", how="left"
+        all_deals_df[["deal_id", "deal_name", "amount", "qualified_date",
+                       "team", "geo", "mega_source", "deal_source", "stage"]],
+        on="deal_id", how="left",
     )
 
     closed_ids = all_deals_df.loc[
@@ -75,28 +76,6 @@ def load_data():
     return merged_closed, merged_all
 
 
-def fetch_deal_info(deal_ids: list[str]) -> pd.DataFrame:
-    conn = snowflake.connector.connect(connection_name="default")
-    ids_str = ",".join(f"'{d}'" for d in deal_ids)
-    query = f"""
-        SELECT
-            f.DEAL_CRM_ID AS deal_id,
-            f.DEAL_NAME AS deal_name,
-            c.COMPANY_NAME AS company_name,
-            f.DEAL_TEAM_NAME AS team,
-            f.DEAL_GEO AS geo,
-            f.MEGA_SOURCE AS mega_source,
-            f.DEAL_TOTAL_ARR AS arr,
-            f.DEAL_STAGE AS current_stage,
-            f.DEAL_SOURCE AS deal_source
-        FROM PORT_ANALYTICS_PROD.DWH.FACT_DEALS f
-        LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY c ON f.SK_COMPANY = c.SK_COMPANY
-        WHERE f.DEAL_CRM_ID IN ({ids_str})
-    """
-    df = pd.read_sql(query, conn)
-    conn.close()
-    df.columns = df.columns.str.lower()
-    return df
 
 
 def quarter_start(dt):
@@ -177,14 +156,12 @@ def compute_series(subset: pd.DataFrame, pacing_days: int):
     return {"full_deals": full_deals, "full_arr": full_arr, "paced_deals": paced_deals, "paced_arr": paced_arr}
 
 
-def compute_all(merged: pd.DataFrame, deal_info: pd.DataFrame):
+def compute_all(merged: pd.DataFrame):
     """Compute conversions for overall + each breakdown dimension."""
     now = datetime.now(timezone.utc)
     pacing_days = days_into_quarter(now) - 1
     current_q_label = quarter_label(now)
 
-    # Merge breakdown dimensions into merged
-    merged = merged.merge(deal_info[["deal_id", "team", "geo", "mega_source"]], on="deal_id", how="left")
     merged["team"] = merged["team"].fillna("Unknown")
     merged["geo"] = merged["geo"].fillna("Unknown")
     merged["mega_source"] = merged["mega_source"].fillna("Unknown")
@@ -215,18 +192,16 @@ def compute_all(merged: pd.DataFrame, deal_info: pd.DataFrame):
     return results, current_q_label, pacing_days
 
 
-def compute_raw_data(merged: pd.DataFrame, deal_info: pd.DataFrame):
+def compute_raw_data(merged: pd.DataFrame):
     now = datetime.now(timezone.utc)
     pacing_days = days_into_quarter(now) - 1
-
-    merged_enriched = merged.merge(deal_info, on="deal_id", how="left")
 
     stages = CHART_STAGES
     raw_data = {}
 
     for i, from_stage in enumerate(stages[:-1]):
         for to_stage in stages[i + 1:]:
-            entered = prepare_entered(merged_enriched, from_stage, to_stage)
+            entered = prepare_entered(merged, from_stage, to_stage)
             if entered is None:
                 continue
 
@@ -237,12 +212,12 @@ def compute_raw_data(merged: pd.DataFrame, deal_info: pd.DataFrame):
                 records.append({
                     "deal_id": row["deal_id"],
                     "deal_name": row.get("deal_name", "") or "",
-                    "company_name": row.get("company_name", "") or "",
+                    "company_name": "",
                     "team": row.get("team", "") or "",
                     "geo": row.get("geo", "") or "",
                     "mega_source": row.get("mega_source", "") or "",
                     "deal_source": row.get("deal_source", "") or "",
-                    "current_stage": row.get("current_stage", "") or "",
+                    "current_stage": row.get("stage", "") or "",
                     "amount": row["amount"] if pd.notna(row["amount"]) else 0,
                     "quarter": row["from_q_label"],
                     "from_date": from_dt.strftime("%Y-%m-%d") if pd.notna(from_dt) else None,
@@ -903,20 +878,15 @@ def main():
     merged_closed, merged_all = load_data()
     print(f"Closed deals: {len(merged_closed)}, All deals: {len(merged_all)}")
 
-    print("Fetching deal info from Snowflake...")
-    all_deal_ids = merged_all["deal_id"].unique().tolist()
-    deal_info = fetch_deal_info(all_deal_ids)
-    print(f"Fetched info for {len(deal_info)} deals")
-
     print("Computing conversions (closed)...")
-    data_closed, current_q_label, pacing_days = compute_all(merged_closed, deal_info)
+    data_closed, current_q_label, pacing_days = compute_all(merged_closed)
     print("Computing conversions (all)...")
-    data_all, _, _ = compute_all(merged_all, deal_info)
+    data_all, _, _ = compute_all(merged_all)
     print(f"Current quarter: {current_q_label}, pacing: {pacing_days} days (up to yesterday)")
 
     print("Computing raw deal data...")
-    raw_closed = compute_raw_data(merged_closed, deal_info)
-    raw_all = compute_raw_data(merged_all, deal_info)
+    raw_closed = compute_raw_data(merged_closed)
+    raw_all = compute_raw_data(merged_all)
 
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     html = build_html(data_closed, data_all, current_q_label, pacing_days, raw_closed, raw_all, generated_at)

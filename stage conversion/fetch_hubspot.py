@@ -20,7 +20,8 @@ QUALIFIED_AFTER_MS = "1704067200000"
 
 PROPERTIES = [
     "dealname", "qualified_date", "pipeline", "dealstage", "dealtype",
-    "hubspot_team_id", "amount",
+    "hubspot_team_id", "amount", "geography", "mega_source", "deal_source",
+    "associations.company",
     "hs_v2_date_entered_982622489", "hs_v2_date_entered_65800978",
     "hs_v2_date_entered_65800980", "hs_v2_date_entered_65537604",
     "hs_v2_date_entered_22339760", "hs_v2_date_entered_contractsent",
