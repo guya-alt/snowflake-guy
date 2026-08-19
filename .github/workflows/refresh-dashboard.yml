@@ -33,6 +33,7 @@ jobs:
         run: python build_chart.py
 
       - name: Commit updated chart
+        working-directory: .
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
