@@ -1,0 +1,20 @@
+# Local data snapshots — regenerate via fetch_hubspot.py
+hubspot_deals.json
+response (*).json
+deals.csv
+stage_timestamps.csv
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+
+# Snowflake / Apps Script local state
+.snowflake/
+.clasprc.json
+
+# Env
+.env

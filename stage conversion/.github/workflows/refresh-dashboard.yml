@@ -1,0 +1,46 @@
+name: Refresh Stage Conversion Dashboard
+
+on:
+  workflow_dispatch:
+  # Uncomment to also refresh nightly at 06:00 UTC as a safety net.
+  # schedule:
+  #   - cron: "0 6 * * *"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: pip install pandas snowflake-connector-python requests
+
+      - name: Write Snowflake connections.toml
+        env:
+          SNOWFLAKE_CONNECTIONS_TOML: ${{ secrets.SNOWFLAKE_CONNECTIONS_TOML }}
+        run: |
+          mkdir -p ~/.snowflake
+          printf '%s' "$SNOWFLAKE_CONNECTIONS_TOML" > ~/.snowflake/connections.toml
+          chmod 600 ~/.snowflake/connections.toml
+
+      - name: Fetch HubSpot deals
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: python fetch_hubspot.py
+
+      - name: Build chart HTML
+        run: python build_chart.py
+
+      - name: Commit updated chart
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "stage conversion/conversion_chart.html"
+          git diff --staged --quiet || git commit -m "Refresh dashboard chart"
+          git push
