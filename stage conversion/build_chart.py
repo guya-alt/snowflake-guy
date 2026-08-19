@@ -327,17 +327,17 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
     margin-left:5px;position:relative;transition:.15s;
   }}
   .info-i:hover{{background:#2a78d6;color:#fff}}
-  .info-i:hover .tip{{visibility:visible;opacity:1;transform:translateX(-50%) translateY(-4px)}}
+  .info-i:hover .tip{{visibility:visible;opacity:1;transform:translateX(-50%) translateY(4px)}}
   .tip{{
     visibility:hidden;opacity:0;transition:.15s;
-    position:absolute;z-index:100;bottom:22px;left:50%;transform:translateX(-50%);
+    position:absolute;z-index:100;top:22px;left:50%;transform:translateX(-50%);
     width:300px;padding:10px 12px;background:#0b0b0b;color:#e1e0d9;
     border-radius:6px;font:400 11.5px/1.5 system-ui,sans-serif;
     text-align:left;text-transform:none;letter-spacing:normal;font-style:normal;
     box-shadow:0 8px 20px rgba(0,0,0,.25);
   }}
   .tip strong{{color:#fff}}.tip em{{color:#86b6ef;font-style:normal;font-weight:500}}
-  .tip::after{{content:'';position:absolute;top:100%;left:50%;margin-left:-5px;border:5px solid transparent;border-top-color:#0b0b0b}}
+  .tip::after{{content:'';position:absolute;bottom:100%;left:50%;margin-left:-5px;border:5px solid transparent;border-bottom-color:#0b0b0b}}
 
   .raw-section{{margin-top:8px}}
   .raw-section h2{{font-size:15px;font-weight:600;margin:0 0 12px}}
