@@ -405,30 +405,11 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
     <select id="toStage"></select>
   </div>
   <div class="ctrl">
-    <label>Metric</label>
-    <select id="metric">
-      <option value="arr">ARR</option>
-      <option value="deals">Deal Count</option>
-    </select>
-  </div>
-  <div class="ctrl">
-    <label>Pacing <span class="info-i">i<span class="tip"><strong>Apples-to-apples pacing.</strong><br>Every quarter measured at <strong>day {pacing_days}</strong> (elapsed days in {current_q_label}).<br><br><strong>Cohort:</strong> deals entering <em>from-stage</em> in the first {pacing_days} days.<br><strong>Converted:</strong> of that cohort, reaching <em>to-stage</em> by day {pacing_days}.<br>Both bounds use the same cutoff.</span></span></label>
-    <select id="pacing">
+    <label>View <span class="info-i">i<span class="tip"><strong>Paced:</strong> every quarter measured at <em>day {pacing_days}</em>. Apples-to-apples.<br><br><strong>Full Quarter:</strong> final conversion rate, closed deals only.<br><br><strong>Pipeline:</strong> all deals including in-progress. Shows potential band &mdash; recent quarters may still grow.<br><br><strong>Resolution:</strong> converted / (converted + lost). Only deals with a known outcome. Ignores deals still in stage.</span></span></label>
+    <select id="viewMode">
       <option value="paced">Paced (first {pacing_days} days)</option>
       <option value="full">Full Quarter</option>
-    </select>
-  </div>
-  <div class="ctrl">
-    <label>Deals</label>
-    <select id="closedFilter">
-      <option value="closed">Closed Only</option>
-      <option value="all">All Deals</option>
-    </select>
-  </div>
-  <div class="ctrl" id="rateTypeCtrl" style="display:none">
-    <label>Rate Type <span class="info-i">i<span class="tip"><strong>Standard:</strong> converted / all deals entered.<br><br><strong>Resolution:</strong> converted / (converted + lost). Only measures deals whose fate is known &mdash; excludes deals still in stage. Smoothed by cohort entry date.</span></span></label>
-    <select id="rateType">
-      <option value="standard">Standard</option>
+      <option value="pipeline">Pipeline</option>
       <option value="resolution">Resolution</option>
     </select>
   </div>
@@ -566,12 +547,16 @@ function bindHighlight(chartId) {{
 
 const fromSelect = document.getElementById('fromStage');
 const toSelect = document.getElementById('toStage');
-const metricSelect = document.getElementById('metric');
-const pacingSelect = document.getElementById('pacing');
-const closedFilter = document.getElementById('closedFilter');
-const rateTypeSelect = document.getElementById('rateType');
-const rateTypeCtrl = document.getElementById('rateTypeCtrl');
+const viewSelect = document.getElementById('viewMode');
 const breakdownSelect = document.getElementById('breakdown');
+
+function viewParams() {{
+  var v = viewSelect.value;
+  if (v === 'paced') return {{ pacing: 'paced', closed: 'closed', resolution: false }};
+  if (v === 'full') return {{ pacing: 'full', closed: 'closed', resolution: false }};
+  if (v === 'pipeline') return {{ pacing: 'full', closed: 'all', resolution: false }};
+  return {{ pacing: 'full', closed: 'all', resolution: true }};
+}}
 
 STAGES.slice(0, -1).forEach(function(s, i) {{
   const opt = document.createElement('option');
@@ -595,15 +580,12 @@ function updateToOptions() {{
 function updateChart() {{
   const from = fromSelect.value;
   const to = toSelect.value;
-  const metric = metricSelect.value;
-  const pacing = pacingSelect.value;
-  const closed = closedFilter.value;
-  const rateType = rateTypeSelect.value;
+  const vp = viewParams();
+  const pacing = vp.pacing;
+  const closed = vp.closed;
+  const useResolution = vp.resolution;
   const breakdown = breakdownSelect.value;
-
-  rateTypeCtrl.style.display = pacing === 'full' ? '' : 'none';
-  if (pacing !== 'full') rateTypeSelect.value = 'standard';
-  const useResolution = pacing === 'full' && rateType === 'resolution';
+  const metric = 'arr';
 
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const key = from + '|' + to;
@@ -611,16 +593,15 @@ function updateChart() {{
 
   const brkLabel = breakdown === 'none' ? '' : ' by ' + {{team:'Team',geo:'Geo',mega_source:'Mega Source'}}[breakdown];
   document.getElementById('chart-title').textContent = from + ' → ' + to + brkLabel;
-  var ml = metric === 'arr' ? 'ARR' : 'deals';
   var sub;
   if (pacing === 'paced') {{
-    sub = 'How much ' + ml + ' moved from ' + from + ' to ' + to + ' within ' + PACING_DAYS + ' days?';
+    sub = 'How much ARR moved from ' + from + ' to ' + to + ' within ' + PACING_DAYS + ' days?';
   }} else if (useResolution) {{
-    sub = 'When ' + ml + ' at ' + from + ' reaches an outcome, how often does it reach ' + to + '?';
+    sub = 'When ARR at ' + from + ' reaches an outcome, how often does it reach ' + to + '?';
   }} else if (closed === 'all') {{
-    sub = 'How much ' + ml + ' entering ' + from + ' reached ' + to + '? Recent quarters may still grow.';
+    sub = 'How much ARR entering ' + from + ' reached ' + to + '? Recent quarters may still grow.';
   }} else {{
-    sub = 'How much ' + ml + ' entering ' + from + ' reached ' + to + '?';
+    sub = 'How much ARR entering ' + from + ' reached ' + to + '?';
   }}
   document.getElementById('chart-sub').textContent = sub;
 
@@ -651,14 +632,13 @@ function updateChart() {{
       var pct = rate !== null && rate !== undefined ? rate.toFixed(1) + '%' : 'N/A';
       var detail;
       if (useResolution) {{
-        var resolved = d.numerator + (d.lost || 0);
-        detail = metric === 'deals' ? '(' + d.numerator + '/' + resolved + ' resolved)' : '(' + fmtK(d.numerator) + '/' + fmtK(d.numerator + (d.lost || 0)) + ' resolved)';
+        detail = '(' + fmtK(d.numerator) + '/' + fmtK(d.numerator + (d.lost || 0)) + ' resolved)';
       }} else {{
-        detail = metric === 'deals' ? '(' + d.numerator + '/' + d.denominator + ')' : '(' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
+        detail = '(' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
       }}
       var line = '<b>' + pct + '</b>  ' + groupName + '  ' + detail;
       if (d.in_play && d.ceiling !== undefined && !useResolution && breakdown === 'none') {{
-        line += '<br><span style="color:#898781">Ceiling: ' + d.ceiling.toFixed(1) + '%  (' + (metric === 'deals' ? d.in_play + ' in stage' : fmtK(d.in_play) + ' in stage') + ')</span>';
+        line += '<br><span style="color:#898781">Ceiling: ' + d.ceiling.toFixed(1) + '%  (' + fmtK(d.in_play) + ' in stage)</span>';
       }}
       return line;
     }});
@@ -708,8 +688,8 @@ function updateChart() {{
 
   const targetKey = from + '|' + to;
   const target = (
-    metric === 'arr' && pacing === 'full' && closed === 'closed'
-    && breakdown === 'none' && TARGETS[targetKey] !== undefined
+    pacing === 'full' && closed === 'closed'
+    && breakdown === 'none' && !useResolution && TARGETS[targetKey] !== undefined
   ) ? TARGETS[targetKey] : null;
 
   if (target !== null && traces.length > 0) {{
@@ -735,26 +715,25 @@ function updateChart() {{
 }}
 
 function updateChart2() {{
-  const metric = metricSelect.value;
-  const pacing = pacingSelect.value;
-  const closed = closedFilter.value;
-  const rateType = rateTypeSelect.value;
-  const useRes = pacing === 'full' && rateType === 'resolution';
+  const vp = viewParams();
+  const pacing = vp.pacing;
+  const closed = vp.closed;
+  const useRes = vp.resolution;
+  const metric = 'arr';
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const seriesKey = pacing + '_' + metric;
   const stagesForWon = STAGES.slice(0, -1);
   const traces2 = [];
 
-  var ml = metric === 'arr' ? 'ARR' : 'deals';
   var sub2;
   if (pacing === 'paced') {{
-    sub2 = 'How much ' + ml + ' from each stage closed won within ' + PACING_DAYS + ' days?';
+    sub2 = 'How much ARR from each stage closed won within ' + PACING_DAYS + ' days?';
   }} else if (useRes) {{
-    sub2 = 'When ' + ml + ' at each stage reaches an outcome, how often does it close won?';
+    sub2 = 'When ARR at each stage reaches an outcome, how often does it close won?';
   }} else if (closed === 'all') {{
-    sub2 = 'How much ' + ml + ' from each stage closed won? Recent quarters may still grow.';
+    sub2 = 'How much ARR from each stage closed won? Recent quarters may still grow.';
   }} else {{
-    sub2 = 'How much ' + ml + ' from each stage closed won?';
+    sub2 = 'How much ARR from each stage closed won?';
   }}
   document.getElementById('chart2-sub').textContent = sub2;
 
@@ -776,10 +755,9 @@ function updateChart2() {{
         var rate = useRes ? d.resolution_rate : d.rate;
         var pct = rate !== null && rate !== undefined ? rate.toFixed(1) + '%' : 'N/A';
         if (useRes) {{
-          var resolved = d.numerator + (d.lost || 0);
-          var detail = metric === 'deals' ? '(' + d.numerator + '/' + resolved + ' resolved)' : '(' + fmtK(d.numerator) + '/' + fmtK(d.numerator + (d.lost || 0)) + ' resolved)';
+          var detail = '(' + fmtK(d.numerator) + '/' + fmtK(d.numerator + (d.lost || 0)) + ' resolved)';
         }} else {{
-          var detail = metric === 'deals' ? '(' + d.numerator + '/' + d.denominator + ')' : '(' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
+          var detail = '(' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
         }}
         return '<b>' + pct + '</b>  ' + stage + '  ' + detail;
       }}),
@@ -916,10 +894,7 @@ document.getElementById('raw-conv-filter').addEventListener('change', renderTabl
 
 fromSelect.addEventListener('change', updateToOptions);
 toSelect.addEventListener('change', updateChart);
-metricSelect.addEventListener('change', updateChart);
-pacingSelect.addEventListener('change', updateChart);
-closedFilter.addEventListener('change', updateChart);
-rateTypeSelect.addEventListener('change', updateChart);
+viewSelect.addEventListener('change', updateChart);
 breakdownSelect.addEventListener('change', updateChart);
 
 var _gen = new Date(GENERATED_AT);
