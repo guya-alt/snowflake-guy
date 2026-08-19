@@ -444,7 +444,7 @@ const RAW_CLOSED = {raw_closed_json};
 const RAW_ALL = {raw_all_json};
 const PACING_DAYS = {pacing_days};
 const GENERATED_AT = "{generated_at}";
-const COLORS = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300'];
+const COLORS = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300','#4a3aa7','#e34948'];
 const TARGETS = {{
   "Demo / Presentation|Business Validation": 70,
   "Formal Pilot|Business Case Confirmation": 85,
@@ -477,6 +477,36 @@ function fmtK(n) {{
   if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
   if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
   return '$' + n.toLocaleString();
+}}
+
+var _hl = {{}};
+function bindHighlight(chartId) {{
+  var el = document.getElementById(chartId);
+  el.removeAllListeners('plotly_legendclick');
+  _hl[chartId] = -1;
+  el.on('plotly_legendclick', function(ev) {{
+    var idx = ev.curveNumber;
+    var n = el.data.length;
+    var upd, indices;
+    if (_hl[chartId] === idx) {{
+      upd = {{ opacity: Array(n).fill(1), 'line.width': Array(n).fill(2), 'marker.size': Array(n).fill(8) }};
+      indices = Array.from({{length: n}}, function(_, i) {{ return i; }});
+      Plotly.restyle(chartId, upd, indices);
+      _hl[chartId] = -1;
+    }} else {{
+      var opac = [], lw = [], ms = [];
+      for (var i = 0; i < n; i++) {{
+        var isTarget = el.data[i].name && el.data[i].name.indexOf('Target') === 0;
+        if (i === idx) {{ opac.push(1); lw.push(3.5); ms.push(10); }}
+        else if (isTarget) {{ opac.push(0.6); lw.push(2); ms.push(8); }}
+        else {{ opac.push(0.15); lw.push(1.5); ms.push(6); }}
+      }}
+      indices = Array.from({{length: n}}, function(_, i) {{ return i; }});
+      Plotly.restyle(chartId, {{ opacity: opac, 'line.width': lw, 'marker.size': ms }}, indices);
+      _hl[chartId] = idx;
+    }}
+    return false;
+  }});
 }}
 
 const fromSelect = document.getElementById('fromStage');
@@ -584,6 +614,7 @@ function updateChart() {{
   Plotly.react('chart', traces, Object.assign({{}}, PLOTLY_LAYOUT, {{
     showlegend: groups.length > 1 || target !== null,
   }}), PCFG);
+  bindHighlight('chart');
   updateRawTable(from, to, pacing, closed);
   updateChart2();
 }}
@@ -622,6 +653,7 @@ function updateChart2() {{
   Plotly.react('chart2', traces2, Object.assign({{}}, PLOTLY_LAYOUT, {{
     showlegend: true,
   }}), PCFG);
+  bindHighlight('chart2');
 }}
 
 let currentRecords = [];
