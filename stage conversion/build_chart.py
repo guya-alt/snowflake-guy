@@ -316,6 +316,9 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
   .chart-card .subtitle{{font-size:12.5px;color:#898781;margin-bottom:12px}}
   #chart{{width:100%;height:420px}}
   #chart2{{width:100%;height:380px}}
+  details.chart-card summary{{list-style:none}}
+  details.chart-card summary::-webkit-details-marker{{display:none}}
+  details.chart-card[open] #chart2-toggle{{transform:rotate(180deg)}}
 
   .info-i{{
     display:inline-flex;align-items:center;justify-content:center;
@@ -446,11 +449,14 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
   <div id="chart"></div>
 </div>
 
-<div class="chart-card">
-  <h2>Stage &rarr; Closed Won</h2>
-  <div class="subtitle">For each stage, what % of deals that entered it in a given quarter went on to close won?</div>
+<details class="chart-card" id="chart2-accordion">
+  <summary style="cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px">
+    <h2 style="margin:0">Stage &rarr; Closed Won</h2>
+    <span style="font-size:11px;color:#898781;margin-left:4px" id="chart2-toggle">Show &#9662;</span>
+  </summary>
+  <div class="subtitle" id="chart2-sub" style="margin-top:8px"></div>
   <div id="chart2"></div>
-</div>
+</details>
 
 <div class="raw-section">
   <h2>Deal-Level Data</h2>
@@ -732,10 +738,25 @@ function updateChart2() {{
   const metric = metricSelect.value;
   const pacing = pacingSelect.value;
   const closed = closedFilter.value;
+  const rateType = rateTypeSelect.value;
+  const useRes = pacing === 'full' && rateType === 'resolution';
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const seriesKey = pacing + '_' + metric;
   const stagesForWon = STAGES.slice(0, -1);
   const traces2 = [];
+
+  var ml = metric === 'arr' ? 'ARR' : 'deals';
+  var sub2;
+  if (pacing === 'paced') {{
+    sub2 = 'How much ' + ml + ' from each stage closed won within ' + PACING_DAYS + ' days?';
+  }} else if (useRes) {{
+    sub2 = 'When ' + ml + ' at each stage reaches an outcome, how often does it close won?';
+  }} else if (closed === 'all') {{
+    sub2 = 'How much ' + ml + ' from each stage closed won? Recent quarters may still grow.';
+  }} else {{
+    sub2 = 'How much ' + ml + ' from each stage closed won?';
+  }}
+  document.getElementById('chart2-sub').textContent = sub2;
 
   stagesForWon.forEach(function(stage, idx) {{
     const key = stage + '|Closed Won';
@@ -745,13 +766,22 @@ function updateChart2() {{
 
     traces2.push({{
       x: series.map(function(d) {{ return d.quarter; }}),
-      y: series.map(function(d) {{ return d.rate; }}),
+      y: series.map(function(d) {{
+        if (useRes && d.resolution_rate !== undefined && d.resolution_rate !== null) return d.resolution_rate;
+        return d.rate;
+      }}),
       type: 'scatter', mode: 'lines+markers',
       name: stage,
       hovertext: series.map(function(d) {{
-        const pct = d.rate !== null ? d.rate.toFixed(1) + '%' : 'N/A';
-        if (metric === 'deals') return '<b>' + pct + '</b>  ' + stage + '  (' + d.numerator + '/' + d.denominator + ')';
-        return '<b>' + pct + '</b>  ' + stage + '  (' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
+        var rate = useRes ? d.resolution_rate : d.rate;
+        var pct = rate !== null && rate !== undefined ? rate.toFixed(1) + '%' : 'N/A';
+        if (useRes) {{
+          var resolved = d.numerator + (d.lost || 0);
+          var detail = metric === 'deals' ? '(' + d.numerator + '/' + resolved + ' resolved)' : '(' + fmtK(d.numerator) + '/' + fmtK(d.numerator + (d.lost || 0)) + ' resolved)';
+        }} else {{
+          var detail = metric === 'deals' ? '(' + d.numerator + '/' + d.denominator + ')' : '(' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
+        }}
+        return '<b>' + pct + '</b>  ' + stage + '  ' + detail;
       }}),
       hoverinfo: 'text',
       line: {{ color: COLORS[idx % COLORS.length], width: 2, shape: 'spline', smoothing: 0.3 }},
@@ -766,6 +796,14 @@ function updateChart2() {{
   }}), PCFG);
   bindHighlight('chart2');
 }}
+
+document.getElementById('chart2-accordion').addEventListener('toggle', function() {{
+  var label = document.getElementById('chart2-toggle');
+  label.innerHTML = this.open ? 'Hide &#9652;' : 'Show &#9662;';
+  if (this.open) {{
+    Plotly.Plots.resize(document.getElementById('chart2'));
+  }}
+}});
 
 let currentRecords = [];
 let sortCol = null;
