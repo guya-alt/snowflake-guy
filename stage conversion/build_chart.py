@@ -604,11 +604,21 @@ function updateChart() {{
   const seriesKey = pacing + '_' + metric;
 
   const brkLabel = breakdown === 'none' ? '' : ' by ' + {{team:'Team',geo:'Geo',mega_source:'Mega Source'}}[breakdown];
-  var rateLabel = useResolution ? '  ·  Resolution rate' : '';
   document.getElementById('chart-title').textContent = from + ' → ' + to + brkLabel;
-  document.getElementById('chart-sub').textContent =
-    'Of deals entering ' + from + ' each quarter, what % reached ' + to + '?' +
-    (pacing === 'paced' ? '  ·  Paced at day ' + PACING_DAYS : '') + rateLabel;
+  var ml = metric === 'arr' ? 'ARR' : 'deals';
+  var sub;
+  if (pacing === 'paced') {{
+    sub = 'What % of ' + ml + ' entering ' + from + ' reached ' + to + ' within ' + PACING_DAYS + ' days? Same cutoff every quarter.';
+  }} else if (useResolution) {{
+    sub = 'Of deals with a known outcome at ' + from + ', what % of ' + ml + ' converted to ' + to + '?';
+    if (closed === 'all') sub += ' Deals still in pipeline are excluded.';
+    else sub += ' Closed deals only.';
+  }} else {{
+    sub = 'What % of ' + ml + ' entering ' + from + ' converted to ' + to + '?';
+    if (closed === 'all') sub += ' Includes deals still in pipeline — recent quarters may increase.';
+    else sub += ' Closed deals only.';
+  }}
+  document.getElementById('chart-sub').textContent = sub;
 
   if (!DATA[key] || !DATA[key][breakdown]) {{
     Plotly.react('chart', [], Object.assign({{}}, PLOTLY_LAYOUT, {{
