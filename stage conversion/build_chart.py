@@ -216,6 +216,7 @@ def compute_raw_data(merged: pd.DataFrame):
     return raw_data
 
 
+
 def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_days: int, raw_closed: dict, raw_all: dict, generated_at: str):
     stages_json = json.dumps(CHART_STAGES)
     data_closed_json = json.dumps(data_closed)
@@ -230,220 +231,166 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
 <title>Stage Conversion Analysis</title>
 <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 <style>
-  :root {{
-    --bg: #f5f7fb;
-    --surface: #ffffff;
-    --border: #e5e7eb;
-    --text: #0f172a;
-    --text-muted: #64748b;
-    --text-subtle: #94a3b8;
-    --primary: #4f46e5;
-    --primary-hover: #4338ca;
-    --primary-soft: #eef2ff;
-    --success: #16a34a;
-    --danger: #dc2626;
-    --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-    --shadow-md: 0 1px 3px rgba(15, 23, 42, 0.06), 0 4px 12px rgba(15, 23, 42, 0.04);
-    --radius: 10px;
+  *{{box-sizing:border-box}}
+  body{{
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    margin:0;padding:0;background:#f9f9f7;color:#0b0b0b;
+    font-size:14px;line-height:1.5;
+    -webkit-font-smoothing:antialiased;
   }}
-  * {{ box-sizing: border-box; }}
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
-    margin: 0; padding: 28px 32px 60px; background: var(--bg); color: var(--text);
-    font-size: 14px; line-height: 1.5;
-    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
-  }}
-  h2 {{ font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4px; }}
-  h3 {{ font-size: 16px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; color: var(--text); }}
-  .header-row {{
-    display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 16px; margin-bottom: 4px;
-  }}
-  .refresh-bar {{
-    display: flex; align-items: center; gap: 10px; font-size: 12px;
-    color: var(--text-muted); white-space: nowrap;
-  }}
-  #refresh-btn {{
-    padding: 6px 14px; border: 1px solid var(--border); border-radius: 8px;
-    background: white; color: var(--text); cursor: pointer; font-family: inherit;
-    font-size: 12.5px; font-weight: 500; transition: background 0.1s, border-color 0.1s;
-  }}
-  #refresh-btn:hover:not(:disabled) {{ background: var(--primary-soft); border-color: var(--primary); color: var(--primary); }}
-  #refresh-btn:disabled {{ opacity: 0.5; cursor: not-allowed; }}
-  #refresh-status {{ font-style: italic; color: var(--text-subtle); }}
-  .scope {{ font-size: 13px; color: var(--text-muted); margin-bottom: 4px; }}
-  .scope strong {{ color: var(--text); font-weight: 600; }}
-  .question {{ font-size: 12.5px; color: var(--text-subtle); font-style: italic; margin-bottom: 20px; }}
-  .question strong {{ color: var(--text-muted); font-style: normal; font-weight: 600; }}
+  .wrap{{max-width:1280px;margin:0 auto;padding:28px 32px 64px}}
 
-  .card {{
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: 20px 22px; box-shadow: var(--shadow-md);
-    margin-bottom: 20px;
+  .hdr{{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px}}
+  .hdr h1{{font-size:20px;font-weight:700;letter-spacing:-.02em;margin:0 0 2px}}
+  .hdr-meta{{font-size:12.5px;color:#898781}}
+  .hdr-meta b{{color:#52514e;font-weight:600}}
+  .refresh-bar{{display:flex;align-items:center;gap:8px;white-space:nowrap}}
+  #last-refreshed{{font-size:12px;color:#898781}}
+  #refresh-btn{{
+    padding:5px 14px;border:1px solid #e1e0d9;border-radius:6px;
+    background:#fcfcfb;color:#52514e;cursor:pointer;font:500 12px/1 system-ui,sans-serif;
+    transition:.15s;
   }}
+  #refresh-btn:hover:not(:disabled){{border-color:#2a78d6;color:#2a78d6;background:#f0f6ff}}
+  #refresh-btn:disabled{{opacity:.45;cursor:not-allowed}}
+  #refresh-status{{font-size:12px;color:#898781;font-style:italic}}
 
-  .controls {{
-    display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end;
-    padding: 16px 18px; background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); margin-bottom: 20px; box-shadow: var(--shadow-sm);
+  .controls{{
+    display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;
+    padding:14px 16px;background:#fcfcfb;border:1px solid #e1e0d9;
+    border-radius:8px;margin-bottom:20px;
   }}
-  .control-group {{ display: flex; flex-direction: column; position: relative; min-width: 140px; }}
-  .control-group label {{
-    font-size: 10.5px; font-weight: 600; color: var(--text-muted);
-    margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em;
-    display: flex; align-items: center;
+  .ctrl{{display:flex;flex-direction:column;min-width:130px;position:relative}}
+  .ctrl label{{
+    font-size:10px;font-weight:700;color:#898781;
+    margin-bottom:5px;text-transform:uppercase;letter-spacing:.06em;
+    display:flex;align-items:center;
   }}
-  select {{
-    padding: 8px 32px 8px 12px; border: 1px solid var(--border); border-radius: 8px;
-    font-size: 13px; background: white; color: var(--text); cursor: pointer;
-    font-family: inherit; appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%2364748b' d='M6 8L2 4h8z'/></svg>");
-    background-repeat: no-repeat; background-position: right 10px center;
-    transition: border-color 0.15s, box-shadow 0.15s;
+  select{{
+    padding:7px 30px 7px 10px;border:1px solid #e1e0d9;border-radius:6px;
+    font:13px/1.4 system-ui,sans-serif;color:#0b0b0b;background:#fff;
+    cursor:pointer;appearance:none;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%23898781' d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+    background-repeat:no-repeat;background-position:right 8px center;
+    transition:.15s;
   }}
-  select:hover {{ border-color: #cbd5e1; }}
-  select:focus {{ outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12); }}
+  select:focus{{outline:none;border-color:#2a78d6;box-shadow:0 0 0 2px rgba(42,120,214,.15)}}
 
-  #chart, #chart2 {{
-    width: 100%; height: 520px; background: var(--surface);
-    border-radius: var(--radius); border: 1px solid var(--border);
-    padding: 12px; box-shadow: var(--shadow-md);
+  .chart-card{{
+    background:#fcfcfb;border:1px solid #e1e0d9;border-radius:8px;
+    padding:20px;margin-bottom:24px;
   }}
-  #chart2 {{ height: 460px; margin-bottom: 24px; }}
+  .chart-card h2{{font-size:15px;font-weight:600;margin:0 0 2px;letter-spacing:-.01em}}
+  .chart-card .subtitle{{font-size:12.5px;color:#898781;margin-bottom:12px}}
+  #chart{{width:100%;height:420px}}
+  #chart2{{width:100%;height:380px}}
 
-  .section-header {{ margin: 8px 0 12px; }}
-  .section-header h3 {{ display: inline-block; margin-right: 8px; }}
+  .info-i{{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:14px;height:14px;border-radius:50%;background:#e1e0d9;
+    color:#898781;font:italic 700 9px/1 Georgia,serif;cursor:help;
+    margin-left:5px;position:relative;transition:.15s;
+  }}
+  .info-i:hover{{background:#2a78d6;color:#fff}}
+  .info-i:hover .tip{{visibility:visible;opacity:1;transform:translateX(-50%) translateY(-4px)}}
+  .tip{{
+    visibility:hidden;opacity:0;transition:.15s;
+    position:absolute;z-index:100;bottom:22px;left:50%;transform:translateX(-50%);
+    width:300px;padding:10px 12px;background:#0b0b0b;color:#e1e0d9;
+    border-radius:6px;font:400 11.5px/1.5 system-ui,sans-serif;
+    text-align:left;text-transform:none;letter-spacing:normal;font-style:normal;
+    box-shadow:0 8px 20px rgba(0,0,0,.25);
+  }}
+  .tip strong{{color:#fff}}.tip em{{color:#86b6ef;font-style:normal;font-weight:500}}
+  .tip::after{{content:'';position:absolute;top:100%;left:50%;margin-left:-5px;border:5px solid transparent;border-top-color:#0b0b0b}}
 
-  .info {{
-    font-size: 12.5px; color: var(--text-muted);
-    background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--primary);
-    padding: 12px 16px; border-radius: 8px; margin-top: 16px; line-height: 1.55;
+  .raw-section{{margin-top:8px}}
+  .raw-section h2{{font-size:15px;font-weight:600;margin:0 0 12px}}
+  .raw-bar{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}}
+  #raw-filter{{
+    padding:7px 12px;border:1px solid #e1e0d9;border-radius:6px;
+    font:13px/1.4 system-ui,sans-serif;width:320px;background:#fff;transition:.15s;
   }}
-  .info strong {{ color: var(--text); font-weight: 600; }}
+  #raw-filter:focus{{outline:none;border-color:#2a78d6;box-shadow:0 0 0 2px rgba(42,120,214,.15)}}
+  #raw-filter::placeholder{{color:#c3c2b7}}
+  #raw-conv-filter{{font:13px/1.4 system-ui,sans-serif}}
+  #deal-count-label{{font-size:12px;color:#898781;margin-left:auto}}
+  .tbl-wrap{{
+    background:#fcfcfb;border:1px solid #e1e0d9;border-radius:8px;
+    overflow:auto;max-height:520px;
+  }}
+  #raw-table{{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}}
+  #raw-table thead{{position:sticky;top:0;z-index:2}}
+  #raw-table th{{
+    background:#f4f4f1;color:#898781;padding:9px 12px;
+    text-align:left;font-weight:600;font-size:10.5px;text-transform:uppercase;
+    letter-spacing:.04em;border-bottom:1px solid #e1e0d9;
+    cursor:pointer;user-select:none;white-space:nowrap;transition:.1s;
+  }}
+  #raw-table th:hover{{color:#2a78d6}}
+  #raw-table th.sorted{{color:#2a78d6}}
+  #raw-table th .sa{{font-size:8px;margin-left:3px;opacity:.4}}
+  #raw-table th.sorted .sa{{opacity:1}}
+  #raw-table td{{padding:7px 12px;border-bottom:1px solid #f0efec;color:#0b0b0b;white-space:nowrap}}
+  #raw-table tbody tr:hover td{{background:#f4f4f1}}
+  .cy{{color:#006300;font-weight:700}}
+  .cn{{color:#d03b3b;font-weight:500}}
 
-  #raw-section {{ margin-top: 24px; }}
-  .raw-controls {{
-    display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;
+  .foot{{
+    font-size:12px;color:#898781;margin-top:20px;padding:12px 16px;
+    background:#fcfcfb;border:1px solid #e1e0d9;border-left:3px solid #2a78d6;
+    border-radius:6px;line-height:1.6;
   }}
-  #raw-filter {{
-    padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
-    font-size: 13px; width: 340px; font-family: inherit; background: white;
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }}
-  #raw-filter:focus {{ outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12); }}
-  #raw-filter::placeholder {{ color: var(--text-subtle); }}
-  #raw-conv-filter {{
-    padding: 8px 30px 8px 12px; border: 1px solid var(--border); border-radius: 8px;
-    font-size: 13px; background: white; cursor: pointer; appearance: none;
-    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path fill='%2364748b' d='M6 8L2 4h8z'/></svg>");
-    background-repeat: no-repeat; background-position: right 10px center; font-family: inherit;
-  }}
-  #deal-count-label {{ font-size: 12.5px; color: var(--text-muted); margin-left: auto; }}
-
-  #raw-table {{
-    width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px;
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow-sm);
-  }}
-  #raw-table th {{
-    background: #f8fafc; color: var(--text-muted); padding: 10px 14px;
-    text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase;
-    letter-spacing: 0.04em; border-bottom: 1px solid var(--border);
-    cursor: pointer; user-select: none; white-space: nowrap;
-    transition: background 0.1s, color 0.1s;
-  }}
-  #raw-table th:hover {{ background: #eef2ff; color: var(--primary); }}
-  #raw-table th.sorted {{ background: var(--primary-soft); color: var(--primary); }}
-  #raw-table th .sort-arrow {{ font-size: 9px; margin-left: 4px; opacity: 0.5; }}
-  #raw-table th.sorted .sort-arrow {{ opacity: 1; }}
-  #raw-table td {{
-    padding: 8px 14px; border-bottom: 1px solid #f1f5f9; color: var(--text);
-    white-space: nowrap;
-  }}
-  #raw-table tbody tr:last-child td {{ border-bottom: none; }}
-  #raw-table tbody tr:hover td {{ background: #f8fafc; }}
-  .converted-yes {{ color: var(--success); font-weight: 700; }}
-  .converted-no {{ color: var(--danger); font-weight: 500; opacity: 0.85; }}
-
-  .info-icon {{
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 15px; height: 15px; border-radius: 50%;
-    background: #e2e8f0; color: var(--text-muted);
-    font-size: 10px; font-weight: 700; cursor: help; margin-left: 6px;
-    font-family: Georgia, serif; font-style: italic; position: relative;
-    transition: background 0.15s, color 0.15s;
-  }}
-  .info-icon:hover {{ background: var(--primary); color: white; }}
-  .info-icon:hover .tooltip {{ visibility: visible; opacity: 1; transform: translateX(-50%) translateY(-4px); }}
-  .tooltip {{
-    visibility: hidden; opacity: 0;
-    transition: opacity 0.15s, transform 0.15s;
-    position: absolute; z-index: 100; bottom: 24px; left: 50%;
-    transform: translateX(-50%); width: 320px; padding: 12px 14px;
-    background: #0f172a; color: #f1f5f9; border-radius: 8px;
-    font-size: 12px; line-height: 1.55; font-family: inherit; font-style: normal;
-    font-weight: 400; text-align: left;
-    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25), 0 2px 4px rgba(15, 23, 42, 0.1);
-    text-transform: none; letter-spacing: normal;
-  }}
-  .tooltip strong {{ color: white; font-weight: 600; }}
-  .tooltip em {{ color: #a5b4fc; font-style: normal; font-weight: 500; }}
-  .tooltip::after {{
-    content: ''; position: absolute; top: 100%; left: 50%; margin-left: -6px;
-    border: 6px solid transparent; border-top-color: #0f172a;
-  }}
+  .foot b{{color:#52514e}}
 </style>
 </head>
 <body>
-<div class="header-row">
+<div class="wrap">
+<div class="hdr">
   <div>
-    <h2>Stage-to-Stage Conversion Rate by Quarter</h2>
-    <div class="scope">
-      Pipeline = <strong>Classic</strong> &middot; Deal Type = <strong>New Business</strong> &middot; Qualified Date &ge; <strong>2024-01-01</strong>
+    <h1>Stage Conversion Analysis</h1>
+    <div class="hdr-meta">
+      Pipeline = <b>Classic</b> &middot; Deal Type = <b>New Business</b> &middot; Qualified &ge; <b>2024-01-01</b>
     </div>
   </div>
   <div class="refresh-bar">
     <span id="last-refreshed"></span>
-    <button id="refresh-btn" title="Rebuild the dashboard from fresh HubSpot + Snowflake data">Refresh</button>
+    <button id="refresh-btn">Refresh</button>
     <span id="refresh-status"></span>
   </div>
 </div>
-<div class="question">
-  Of deals that entered the <strong>From Stage</strong> in each quarter, what % reached the <strong>To Stage</strong>?
-  <br>
-  <span style="color:var(--text-subtle);">Entry-cohort: grouped by from-stage entry quarter.</span>
-</div>
+
 <div class="controls">
-  <div class="control-group">
+  <div class="ctrl">
     <label>From Stage</label>
     <select id="fromStage"></select>
   </div>
-  <div class="control-group">
+  <div class="ctrl">
     <label>To Stage</label>
     <select id="toStage"></select>
   </div>
-  <div class="control-group">
+  <div class="ctrl">
     <label>Metric</label>
     <select id="metric">
       <option value="arr">ARR</option>
       <option value="deals">Deal Count</option>
     </select>
   </div>
-  <div class="control-group">
-    <label>Pacing <span class="info-icon">i<span class="tooltip"><strong>Method C — Apples-to-apples pacing.</strong><br><br>Every quarter is measured at <strong>day {pacing_days}</strong> (matching current elapsed days in {current_q_label}).<br><br><strong>Cohort:</strong> deals that entered the <em>from-stage</em> in the first {pacing_days} days of the quarter.<br><br><strong>Converted:</strong> of that cohort, deals whose <em>to-stage</em> entry was also within day {pacing_days} of the same quarter.<br><br>Both bounds use the identical cutoff so no quarter gets extra time.</span></span></label>
+  <div class="ctrl">
+    <label>Pacing <span class="info-i">i<span class="tip"><strong>Apples-to-apples pacing.</strong><br>Every quarter measured at <strong>day {pacing_days}</strong> (elapsed days in {current_q_label}).<br><br><strong>Cohort:</strong> deals entering <em>from-stage</em> in the first {pacing_days} days.<br><strong>Converted:</strong> of that cohort, reaching <em>to-stage</em> by day {pacing_days}.<br>Both bounds use the same cutoff.</span></span></label>
     <select id="pacing">
       <option value="paced">Paced (first {pacing_days} days)</option>
       <option value="full">Full Quarter</option>
     </select>
   </div>
-  <div class="control-group">
-    <label>Deals Filter</label>
+  <div class="ctrl">
+    <label>Deals</label>
     <select id="closedFilter">
       <option value="closed">Closed Only</option>
       <option value="all">All Deals</option>
     </select>
   </div>
-  <div class="control-group">
+  <div class="ctrl">
     <label>Breakdown</label>
     <select id="breakdown">
       <option value="none">None</option>
@@ -453,32 +400,40 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
     </select>
   </div>
 </div>
-<div id="chart"></div>
-<div style="height:32px;"></div>
-<h3>Stage → Closed Won <span style="color:var(--text-subtle);font-weight:500;">(all stages)</span></h3>
-<div class="question" style="margin-bottom:12px;">
-  Of deals that entered a given stage in each quarter, what % <strong>eventually reached Closed Won</strong> (at any time)?
+
+<div class="chart-card">
+  <h2 id="chart-title"></h2>
+  <div class="subtitle" id="chart-sub"></div>
+  <div id="chart"></div>
 </div>
-<div id="chart2"></div>
-<div id="raw-section">
-  <h3>Raw Data</h3>
-  <div class="raw-controls">
-    <input type="text" id="raw-filter" placeholder="Filter by name, owner, team, geo, source...">
+
+<div class="chart-card">
+  <h2>Stage &rarr; Closed Won</h2>
+  <div class="subtitle">For each stage, what % of deals that entered it in a given quarter went on to close won?</div>
+  <div id="chart2"></div>
+</div>
+
+<div class="raw-section">
+  <h2>Deal-Level Data</h2>
+  <div class="raw-bar">
+    <input type="text" id="raw-filter" placeholder="Search deals, owners, teams...">
     <select id="raw-conv-filter">
       <option value="all">All</option>
-      <option value="yes">Converted Only</option>
+      <option value="yes">Converted</option>
       <option value="no">Not Converted</option>
     </select>
     <span id="deal-count-label"></span>
   </div>
-  <table id="raw-table"><thead></thead><tbody></tbody></table>
+  <div class="tbl-wrap">
+    <table id="raw-table"><thead></thead><tbody></tbody></table>
+  </div>
 </div>
-<div class="info">
-  Pacing snapshots every quarter at <strong>day {pacing_days}</strong> (Method C):
-  cohort = deals entering from-stage in the first {pacing_days} days of the quarter;
+
+<div class="foot">
+  <b>Pacing (day {pacing_days}):</b> cohort = deals entering from-stage in the first {pacing_days} days of the quarter;
   converted = of that cohort, reached to-stage by day {pacing_days} of the same quarter.
-  Matches elapsed time in current quarter {current_q_label} (up through yesterday).
-  Conversion = deals reaching "To Stage" / deals that entered "From Stage" in that quarter.
+  Matches elapsed time in {current_q_label} (through yesterday).
+</div>
 </div>
 
 <script>
@@ -489,13 +444,40 @@ const RAW_CLOSED = {raw_closed_json};
 const RAW_ALL = {raw_all_json};
 const PACING_DAYS = {pacing_days};
 const GENERATED_AT = "{generated_at}";
-const COLORS = ['#4f46e5','#dc2626','#16a34a','#ca8a04','#9333ea','#0891b2','#be185d','#65a30d','#c2410c','#6366f1'];
+const COLORS = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300'];
 const TARGETS = {{
   "Demo / Presentation|Business Validation": 70,
   "Formal Pilot|Business Case Confirmation": 85,
   "Business Case Confirmation|Negotiation / Legal": 80,
   "Negotiation / Legal|Closed Won": 90,
 }};
+const PLOTLY_LAYOUT = {{
+  font: {{ family: 'system-ui, -apple-system, sans-serif', size: 12, color: '#52514e' }},
+  paper_bgcolor: 'rgba(0,0,0,0)',
+  plot_bgcolor: 'rgba(0,0,0,0)',
+  margin: {{ t: 8, b: 52, l: 48, r: 16 }},
+  hovermode: 'x unified',
+  xaxis: {{
+    tickangle: -45, tickfont: {{ size: 11, color: '#898781' }},
+    gridcolor: '#e1e0d9', gridwidth: 1, zeroline: false,
+    linecolor: '#c3c2b7', linewidth: 1,
+  }},
+  yaxis: {{
+    title: {{ text: 'Conversion %', font: {{ size: 11, color: '#898781' }} }},
+    rangemode: 'tozero', ticksuffix: '%',
+    tickfont: {{ size: 11, color: '#898781' }},
+    gridcolor: '#e1e0d9', gridwidth: 1, zeroline: false,
+    linecolor: '#c3c2b7', linewidth: 1,
+  }},
+  legend: {{ orientation: 'h', y: -0.22, font: {{ size: 11 }} }},
+}};
+const PCFG = {{ displayModeBar: false, responsive: true }};
+
+function fmtK(n) {{
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
+  return '$' + n.toLocaleString();
+}}
 
 const fromSelect = document.getElementById('fromStage');
 const toSelect = document.getElementById('toStage');
@@ -504,7 +486,7 @@ const pacingSelect = document.getElementById('pacing');
 const closedFilter = document.getElementById('closedFilter');
 const breakdownSelect = document.getElementById('breakdown');
 
-STAGES.slice(0, -1).forEach((s, i) => {{
+STAGES.slice(0, -1).forEach(function(s, i) {{
   const opt = document.createElement('option');
   opt.value = s; opt.text = s;
   if (i === 0) opt.selected = true;
@@ -514,7 +496,7 @@ STAGES.slice(0, -1).forEach((s, i) => {{
 function updateToOptions() {{
   const fromIdx = STAGES.indexOf(fromSelect.value);
   toSelect.innerHTML = '';
-  STAGES.slice(fromIdx + 1).forEach((s, i) => {{
+  STAGES.slice(fromIdx + 1).forEach(function(s, i) {{
     const opt = document.createElement('option');
     opt.value = s; opt.text = s;
     if (i === 0) opt.selected = true;
@@ -535,11 +517,17 @@ function updateChart() {{
   const key = from + '|' + to;
   const seriesKey = pacing + '_' + metric;
 
+  const brkLabel = breakdown === 'none' ? '' : ' by ' + {{team:'Team',geo:'Geo',mega_source:'Mega Source'}}[breakdown];
+  document.getElementById('chart-title').textContent = from + ' → ' + to + brkLabel;
+  document.getElementById('chart-sub').textContent =
+    'Of deals entering ' + from + ' each quarter, what % reached ' + to + '?' +
+    (pacing === 'paced' ? '  ·  Paced at day ' + PACING_DAYS : '');
+
   if (!DATA[key] || !DATA[key][breakdown]) {{
-    Plotly.react('chart', [], {{
-      annotations: [{{text: 'No data for this combination', showarrow: false, font: {{size: 16}}}}],
+    Plotly.react('chart', [], Object.assign({{}}, PLOTLY_LAYOUT, {{
+      annotations: [{{text: 'No data for this combination', showarrow: false, font: {{size: 14, color: '#898781'}}}}],
       xaxis: {{visible: false}}, yaxis: {{visible: false}}
-    }});
+    }}), PCFG);
     updateRawTable(from, to, pacing, closed);
     return;
   }}
@@ -548,76 +536,53 @@ function updateChart() {{
   const traces = [];
   const groups = Object.keys(dimData).sort();
 
-  groups.forEach((groupName, idx) => {{
+  groups.forEach(function(groupName, idx) {{
     const series = dimData[groupName][seriesKey];
     if (!series || series.length === 0) return;
 
-    const x = series.map(d => d.quarter);
-    const y = series.map(d => d.rate);
-    const suffix = pacing === 'paced' ? ' [first ' + PACING_DAYS + 'd]' : '';
-    const hoverText = series.map(d => {{
+    const x = series.map(function(d) {{ return d.quarter; }});
+    const y = series.map(function(d) {{ return d.rate; }});
+    const hoverText = series.map(function(d) {{
       const pct = d.rate !== null ? d.rate.toFixed(1) + '%' : 'N/A';
-      if (metric === 'deals') return groupName + suffix + ': ' + pct + ' (' + d.numerator + '/' + d.denominator + ')';
-      return groupName + suffix + ': ' + pct + ' ($' + Math.round(d.numerator).toLocaleString() + '/$' + Math.round(d.denominator).toLocaleString() + ')';
+      if (metric === 'deals') return '<b>' + pct + '</b>  ' + groupName + '  (' + d.numerator + '/' + d.denominator + ')';
+      return '<b>' + pct + '</b>  ' + groupName + '  (' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
     }});
 
     traces.push({{
-      x: x,
-      y: y,
+      x: x, y: y,
       type: 'scatter',
       mode: groups.length === 1 ? 'lines+markers+text' : 'lines+markers',
       name: groupName,
-      text: groups.length === 1 ? y.map(v => v !== null ? v.toFixed(1) + '%' : '') : undefined,
+      text: groups.length === 1 ? y.map(function(v) {{ return v !== null ? v.toFixed(1) + '%' : ''; }}) : undefined,
       textposition: 'top center',
-      textfont: {{ size: 11 }},
+      textfont: {{ size: 11, color: '#52514e' }},
       hovertext: hoverText,
-      hoverinfo: 'text+x',
-      line: {{ color: COLORS[idx % COLORS.length], width: 2.5 }},
-      marker: {{ size: 7 }},
+      hoverinfo: 'text',
+      line: {{ color: COLORS[idx % COLORS.length], width: 2, shape: 'spline', smoothing: 0.3 }},
+      marker: {{ size: 8, line: {{ color: '#fcfcfb', width: 2 }} }},
     }});
   }});
 
-  const breakdownLabel = breakdown === 'none' ? '' : ' by ' + breakdown.replace('mega_source', 'Mega Source').replace('geo', 'Geo').replace('team', 'Team');
-  const pacingLabel = pacing === 'paced' ? '  ·  First ' + PACING_DAYS + ' days of each quarter' : '';
-
-  // Target line: only show for ARR + Full Quarter + Closed Only + no breakdown, and if defined
   const targetKey = from + '|' + to;
   const target = (
-    metric === 'arr'
-    && pacing === 'full'
-    && closed === 'closed'
-    && breakdown === 'none'
-    && TARGETS[targetKey] !== undefined
+    metric === 'arr' && pacing === 'full' && closed === 'closed'
+    && breakdown === 'none' && TARGETS[targetKey] !== undefined
   ) ? TARGETS[targetKey] : null;
 
-  const layout = {{
-    title: {{
-      text: from + ' → ' + to + breakdownLabel + '<br><span style="font-size:12px;color:#64748b;font-weight:400;">' + (pacing === 'paced' ? 'Snapshot at day ' + PACING_DAYS + ' of each quarter' : 'Full quarter') + '</span>',
-      font: {{ size: 15 }}
-    }},
-    xaxis: {{ title: 'Quarter' + pacingLabel, tickangle: -45 }},
-    yaxis: {{ title: 'Conversion Rate (%)', rangemode: 'tozero' }},
-    margin: {{ t: 70, b: 80, l: 60, r: 30 }},
-    hovermode: 'x unified',
-    showlegend: groups.length > 1 || target !== null,
-    legend: {{ orientation: 'h', y: -0.25 }},
-  }};
-
   if (target !== null && traces.length > 0) {{
-    const xVals = traces[0].x;
     traces.push({{
-      x: xVals,
-      y: xVals.map(() => target),
-      type: 'scatter',
-      mode: 'lines',
-      name: 'Target: ' + target + '%',
-      line: {{ color: '#16a34a', width: 2, dash: 'dash' }},
-      hovertext: xVals.map(() => 'Target: ' + target + '%'),
-      hoverinfo: 'text+x',
+      x: traces[0].x,
+      y: traces[0].x.map(function() {{ return target; }}),
+      type: 'scatter', mode: 'lines',
+      name: 'Target ' + target + '%',
+      line: {{ color: '#006300', width: 1.5, dash: 'dot' }},
+      hoverinfo: 'skip',
     }});
   }}
 
-  Plotly.react('chart', traces, layout);
+  Plotly.react('chart', traces, Object.assign({{}}, PLOTLY_LAYOUT, {{
+    showlegend: groups.length > 1 || target !== null,
+  }}), PCFG);
   updateRawTable(from, to, pacing, closed);
   updateChart2();
 }}
@@ -628,49 +593,34 @@ function updateChart2() {{
   const closed = closedFilter.value;
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const seriesKey = pacing + '_' + metric;
-
-  // Each stage → Closed Won
-  const stagesForWon = STAGES.slice(0, -1); // all except Closed Won itself
+  const stagesForWon = STAGES.slice(0, -1);
   const traces2 = [];
 
-  stagesForWon.forEach((stage, idx) => {{
+  stagesForWon.forEach(function(stage, idx) {{
     const key = stage + '|Closed Won';
     if (!DATA[key] || !DATA[key]['none'] || !DATA[key]['none']['All']) return;
     const series = DATA[key]['none']['All'][seriesKey];
     if (!series || series.length === 0) return;
 
     traces2.push({{
-      x: series.map(d => d.quarter),
-      y: series.map(d => d.rate),
-      type: 'scatter',
-      mode: 'lines+markers',
+      x: series.map(function(d) {{ return d.quarter; }}),
+      y: series.map(function(d) {{ return d.rate; }}),
+      type: 'scatter', mode: 'lines+markers',
       name: stage,
-      hovertext: series.map(d => {{
+      hovertext: series.map(function(d) {{
         const pct = d.rate !== null ? d.rate.toFixed(1) + '%' : 'N/A';
-        const suf = pacing === 'paced' ? ' [first ' + PACING_DAYS + 'd]' : '';
-        if (metric === 'deals') return stage + suf + ': ' + pct + ' (' + d.numerator + '/' + d.denominator + ')';
-        return stage + suf + ': ' + pct + ' ($' + Math.round(d.numerator).toLocaleString() + '/$' + Math.round(d.denominator).toLocaleString() + ')';
+        if (metric === 'deals') return '<b>' + pct + '</b>  ' + stage + '  (' + d.numerator + '/' + d.denominator + ')';
+        return '<b>' + pct + '</b>  ' + stage + '  (' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
       }}),
-      hoverinfo: 'text+x',
-      line: {{ color: COLORS[idx % COLORS.length], width: 2.5 }},
-      marker: {{ size: 7 }},
+      hoverinfo: 'text',
+      line: {{ color: COLORS[idx % COLORS.length], width: 2, shape: 'spline', smoothing: 0.3 }},
+      marker: {{ size: 8, line: {{ color: '#fcfcfb', width: 2 }} }},
     }});
   }});
 
-  const layout2 = {{
-    title: {{
-      text: 'Stage → Closed Won<br><span style="font-size:12px;color:#64748b;font-weight:400;">' + (pacing === 'paced' ? 'Snapshot at day ' + PACING_DAYS + ' of each quarter' : 'Full quarter') + '  ·  ' + (metric === 'arr' ? 'ARR' : 'Deal Count') + '</span>',
-      font: {{ size: 15 }}
-    }},
-    xaxis: {{ title: 'Quarter' + (pacing === 'paced' ? '  ·  First ' + PACING_DAYS + ' days of each quarter' : ''), tickangle: -45 }},
-    yaxis: {{ title: 'Conversion Rate (%)', rangemode: 'tozero' }},
-    margin: {{ t: 70, b: 80, l: 60, r: 30 }},
-    hovermode: 'x unified',
+  Plotly.react('chart2', traces2, Object.assign({{}}, PLOTLY_LAYOUT, {{
     showlegend: true,
-    legend: {{ orientation: 'h', y: -0.25 }},
-  }};
-
-  Plotly.react('chart2', traces2, layout2);
+  }}), PCFG);
 }}
 
 let currentRecords = [];
@@ -683,9 +633,7 @@ function updateRawTable(from, to, pacing, closed) {{
   let records = (RAW[key] || []).slice();
 
   if (pacing === 'paced') {{
-    // Method C: cohort is deals in first N days of quarter;
-    // convert flag flipped to false if to-stage happened after day N
-    records = records.filter(r => r.days_in_q <= PACING_DAYS).map(r => {{
+    records = records.filter(function(r) {{ return r.days_in_q <= PACING_DAYS; }}).map(function(r) {{
       const pacedConv = r.converted && r.to_days_from_q_start !== null && r.to_days_from_q_start < PACING_DAYS + 1;
       return Object.assign({{}}, r, {{ converted: pacedConv }});
     }});
@@ -701,73 +649,80 @@ function updateRawTable(from, to, pacing, closed) {{
 
 function renderTable() {{
   let records = currentRecords.slice();
-  const filterText = document.getElementById('raw-filter').value.toLowerCase();
-  const convFilter = document.getElementById('raw-conv-filter').value;
+  const ft = document.getElementById('raw-filter').value.toLowerCase();
+  const cf = document.getElementById('raw-conv-filter').value;
 
-  if (filterText) {{
-    records = records.filter(r =>
-      (r.deal_name || '').toLowerCase().includes(filterText) ||
-      (r.owner || '').toLowerCase().includes(filterText) ||
-      (r.team || '').toLowerCase().includes(filterText) ||
-      (r.geo || '').toLowerCase().includes(filterText) ||
-      (r.mega_source || '').toLowerCase().includes(filterText) ||
-      (r.current_stage || '').toLowerCase().includes(filterText) ||
-      (r.deal_source || '').toLowerCase().includes(filterText)
-    );
+  if (ft) {{
+    records = records.filter(function(r) {{
+      return (r.deal_name||'').toLowerCase().indexOf(ft)>=0 ||
+        (r.owner||'').toLowerCase().indexOf(ft)>=0 ||
+        (r.team||'').toLowerCase().indexOf(ft)>=0 ||
+        (r.geo||'').toLowerCase().indexOf(ft)>=0 ||
+        (r.mega_source||'').toLowerCase().indexOf(ft)>=0 ||
+        (r.current_stage||'').toLowerCase().indexOf(ft)>=0 ||
+        (r.deal_source||'').toLowerCase().indexOf(ft)>=0;
+    }});
   }}
-
-  if (convFilter === 'yes') records = records.filter(r => r.converted);
-  if (convFilter === 'no') records = records.filter(r => !r.converted);
+  if (cf === 'yes') records = records.filter(function(r) {{ return r.converted; }});
+  if (cf === 'no') records = records.filter(function(r) {{ return !r.converted; }});
 
   if (sortCol) {{
-    records.sort((a, b) => {{
-      let va = a[sortCol], vb = b[sortCol];
+    records.sort(function(a, b) {{
+      var va = a[sortCol], vb = b[sortCol];
       if (va == null) va = '';
       if (vb == null) vb = '';
       if (typeof va === 'number' && typeof vb === 'number') return sortAsc ? va - vb : vb - va;
       if (typeof va === 'boolean') {{ va = va ? 1 : 0; vb = vb ? 1 : 0; return sortAsc ? va - vb : vb - va; }}
-      va = String(va); vb = String(vb);
-      return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+      return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
     }});
   }}
 
-  const cols = [
-    {{key: 'deal_id', label: 'Deal ID'}},
-    {{key: 'deal_name', label: 'Deal Name'}},
-    {{key: 'owner', label: 'Owner'}},
-    {{key: 'team', label: 'Team'}},
-    {{key: 'geo', label: 'Geo'}},
-    {{key: 'mega_source', label: 'Source'}},
-    {{key: 'current_stage', label: 'Current Stage'}},
-    {{key: 'amount', label: 'Amount'}},
-    {{key: 'quarter', label: 'Quarter'}},
-    {{key: 'from_date', label: 'From Date'}},
-    {{key: 'to_date', label: 'To Date'}},
-    {{key: 'converted', label: 'Conv'}},
+  var cols = [
+    {{key:'deal_id',label:'Deal ID'}},{{key:'deal_name',label:'Deal'}},
+    {{key:'owner',label:'Owner'}},{{key:'team',label:'Team'}},
+    {{key:'geo',label:'Geo'}},{{key:'mega_source',label:'Source'}},
+    {{key:'current_stage',label:'Stage'}},{{key:'amount',label:'Amount'}},
+    {{key:'quarter',label:'Quarter'}},{{key:'from_date',label:'From'}},
+    {{key:'to_date',label:'To'}},{{key:'converted',label:'Conv'}},
   ];
 
-  const thead = document.querySelector('#raw-table thead');
-  const tbody = document.querySelector('#raw-table tbody');
-  thead.innerHTML = '<tr>' + cols.map(c => {{
-    const arrow = sortCol === c.key ? (sortAsc ? '\u25B2' : '\u25BC') : '\u25B4';
-    const cls = sortCol === c.key ? ' class="sorted"' : '';
-    return '<th' + cls + ' data-col="' + c.key + '">' + c.label + '<span class="sort-arrow">' + arrow + '</span></th>';
+  var thead = document.querySelector('#raw-table thead');
+  var tbody = document.querySelector('#raw-table tbody');
+
+  thead.innerHTML = '<tr>' + cols.map(function(c) {{
+    var arrow = sortCol === c.key ? (sortAsc ? '▲' : '▼') : '▴';
+    var cls = sortCol === c.key ? ' class="sorted"' : '';
+    return '<th' + cls + ' data-col="' + c.key + '">' + c.label + '<span class="sa">' + arrow + '</span></th>';
   }}).join('') + '</tr>';
 
-  tbody.innerHTML = records.map(r => {{
-    const cc = r.converted ? 'converted-yes' : 'converted-no';
-    const ct = r.converted ? 'Y' : 'N';
-    const amt = r.amount ? '$' + Math.round(r.amount).toLocaleString() : '-';
-    return '<tr><td>' + (r.deal_id || '-') + '</td><td>' + (r.deal_name || '-') + '</td><td>' + (r.owner || '-') + '</td><td>' + (r.team || '-') + '</td><td>' + (r.geo || '-') + '</td><td>' + (r.mega_source || '-') + '</td><td>' + (r.current_stage || '-') + '</td><td>' + amt + '</td><td>' + r.quarter + '</td><td>' + (r.from_date || '-') + '</td><td>' + (r.to_date || '-') + '</td><td class="' + cc + '">' + ct + '</td></tr>';
+  var esc = function(s) {{ var d = document.createElement('span'); d.textContent = s; return d.innerHTML; }};
+
+  tbody.innerHTML = records.map(function(r) {{
+    var cc = r.converted ? 'cy' : 'cn';
+    var ct = r.converted ? '✓' : '✗';
+    var amt = r.amount ? '$' + Math.round(r.amount).toLocaleString() : '—';
+    return '<tr>'
+      + '<td>' + esc(r.deal_id || '—') + '</td>'
+      + '<td>' + esc(r.deal_name || '—') + '</td>'
+      + '<td>' + esc(r.owner || '—') + '</td>'
+      + '<td>' + esc(r.team || '—') + '</td>'
+      + '<td>' + esc(r.geo || '—') + '</td>'
+      + '<td>' + esc(r.mega_source || '—') + '</td>'
+      + '<td>' + esc(r.current_stage || '—') + '</td>'
+      + '<td>' + amt + '</td>'
+      + '<td>' + r.quarter + '</td>'
+      + '<td>' + (r.from_date || '—') + '</td>'
+      + '<td>' + (r.to_date || '—') + '</td>'
+      + '<td class="' + cc + '">' + ct + '</td>'
+      + '</tr>';
   }}).join('');
 
   document.getElementById('deal-count-label').textContent = records.length + ' of ' + currentRecords.length + ' deals';
 
-  // Attach sort handlers
-  thead.querySelectorAll('th').forEach(th => {{
-    th.onclick = () => {{
-      const col = th.dataset.col;
-      if (sortCol === col) {{ sortAsc = !sortAsc; }}
+  thead.querySelectorAll('th').forEach(function(th) {{
+    th.onclick = function() {{
+      var col = th.dataset.col;
+      if (sortCol === col) sortAsc = !sortAsc;
       else {{ sortCol = col; sortAsc = true; }}
       renderTable();
     }};
@@ -784,32 +739,26 @@ pacingSelect.addEventListener('change', updateChart);
 closedFilter.addEventListener('change', updateChart);
 breakdownSelect.addEventListener('change', updateChart);
 
-// ─── Refresh toolbar ───
-const _gen = new Date(GENERATED_AT);
-const _lastRefreshedEl = document.getElementById('last-refreshed');
-const _refreshBtn = document.getElementById('refresh-btn');
-const _refreshStatusEl = document.getElementById('refresh-status');
+var _gen = new Date(GENERATED_AT);
+var _lastRefreshedEl = document.getElementById('last-refreshed');
+var _refreshBtn = document.getElementById('refresh-btn');
+var _refreshStatusEl = document.getElementById('refresh-status');
 
-function _fmtRelative(dt) {{
-  const diffMs = Date.now() - dt.getTime();
-  const mins = Math.floor(diffMs / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return mins + ' min ago';
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return hrs + ' hr ago';
-  const days = Math.floor(hrs / 24);
-  return days + ' day' + (days === 1 ? '' : 's') + ' ago';
+function _fmtRel(dt) {{
+  var m = Math.floor((Date.now() - dt.getTime()) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm ago';
+  var h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
 }}
-_lastRefreshedEl.textContent = 'Last refreshed: ' + _gen.toLocaleString() + ' · ' + _fmtRelative(_gen);
+_lastRefreshedEl.textContent = _fmtRel(_gen);
 
 function _setStatus(t) {{ _refreshStatusEl.textContent = t || ''; }}
 function _isAppsScript() {{ return typeof google !== 'undefined' && google.script && google.script.run; }}
 
 _refreshBtn.onclick = function() {{
-  if (!_isAppsScript()) {{
-    _setStatus('Refresh only works when served by Apps Script.');
-    return;
-  }}
+  if (!_isAppsScript()) {{ _setStatus('Refresh only works when served by Apps Script.'); return; }}
   if (_gen.toDateString() === new Date().toDateString()) {{
     if (!confirm('Already refreshed today at ' + _gen.toLocaleTimeString() + '. Rebuild anyway?')) return;
   }}
@@ -820,10 +769,9 @@ _refreshBtn.onclick = function() {{
       if (!res) {{ _setStatus('No response'); _refreshBtn.disabled = false; return; }}
       if (res.status === 'cooldown') {{
         _setStatus('Cooldown until ' + new Date(res.nextAllowed).toLocaleTimeString());
-        _refreshBtn.disabled = false;
-        return;
+        _refreshBtn.disabled = false; return;
       }}
-      _setStatus('Rebuilding on GitHub Actions (~2–3 min)...');
+      _setStatus('Rebuilding (~2–3 min)...');
       _pollUntilNew(GENERATED_AT);
     }})
     .withFailureHandler(function(err) {{
@@ -834,18 +782,14 @@ _refreshBtn.onclick = function() {{
 }};
 
 function _pollUntilNew(oldGen) {{
-  const started = Date.now();
-  const iv = setInterval(function() {{
-    if (Date.now() - started > 10 * 60 * 1000) {{
-      clearInterval(iv);
-      _setStatus('Timed out — reload manually.');
-      _refreshBtn.disabled = false;
-      return;
+  var started = Date.now();
+  var iv = setInterval(function() {{
+    if (Date.now() - started > 600000) {{
+      clearInterval(iv); _setStatus('Timed out — reload manually.'); _refreshBtn.disabled = false; return;
     }}
     google.script.run.withSuccessHandler(function(s) {{
       if (s && s.generatedAt && s.generatedAt !== oldGen) {{
-        clearInterval(iv);
-        _setStatus('New data ready — reloading...');
+        clearInterval(iv); _setStatus('New data ready — reloading...');
         setTimeout(function() {{ location.reload(); }}, 800);
       }}
     }}).getStatus();
@@ -857,6 +801,7 @@ updateToOptions();
 </body>
 </html>"""
     return html
+
 
 
 def main():
