@@ -28,28 +28,11 @@ def load_data():
     import json as _json
     from build_deals import Deal
 
-    # Prefer the fresh fetch (hubspot_deals.json) if it exists; otherwise fall back
-    # to the manual response (4-7).json exports.
     fresh_path = os.path.join(FOLDER, "hubspot_deals.json")
-    if os.path.exists(fresh_path):
-        with open(fresh_path) as fh:
-            data = _json.load(fh)
-        raw = [Deal.from_raw(r, OWNERS) for r in data.get("results", [])]
-        print(f"Loaded {len(raw)} deal records from hubspot_deals.json")
-    else:
-        files = [
-            os.path.join(FOLDER, "response (4).json"),
-            os.path.join(FOLDER, "response (5).json"),
-            os.path.join(FOLDER, "response (6).json"),
-            os.path.join(FOLDER, "response (7).json"),
-        ]
-        raw = []
-        for f in files:
-            with open(f) as fh:
-                data = _json.load(fh)
-            for r in data.get("results", []):
-                raw.append(Deal.from_raw(r))
-        print(f"Loaded {len(raw)} deal records from {len(files)} files (responses 4-7)")
+    with open(fresh_path) as fh:
+        data = _json.load(fh)
+    raw = [Deal.from_raw(r, OWNERS) for r in data.get("results", [])]
+    print(f"Loaded {len(raw)} deal records from hubspot_deals.json")
 
     deals = deduplicate(raw)
     deals_df = deals_to_dataframe(deals)
@@ -101,8 +84,8 @@ def prepare_entered(merged: pd.DataFrame, from_stage: str, to_stage: str):
         return None
 
     if "qualified_date" in entered.columns:
-        qual = pd.to_datetime(entered["qualified_date"], utc=True, errors="coerce")
-        entered = entered[entered[from_stage] >= qual].copy()
+        qual = pd.to_datetime(entered["qualified_date"], utc=True, errors="coerce").dt.normalize()
+        entered = entered[entered[from_stage].dt.normalize() >= qual].copy()
         if entered.empty:
             return None
 
@@ -147,7 +130,7 @@ def compute_series(subset: pd.DataFrame, pacing_days: int):
         pq = q_deals[q_deals["from_days_in_q"] <= pacing_days]
         pdc = len(pq)
         pda = pq["amount"].sum()
-        paced_converted = pq["converted"] & (pq["to_days_from_q_start"] <= pacing_days)
+        paced_converted = pq["converted"] & (pq["to_days_from_q_start"] < pacing_days + 1)
         pnc = int(paced_converted.sum())
         pna = pq.loc[paced_converted, "amount"].sum()
 
@@ -703,7 +686,7 @@ function updateRawTable(from, to, pacing, closed) {{
     // Method C: cohort is deals in first N days of quarter;
     // convert flag flipped to false if to-stage happened after day N
     records = records.filter(r => r.days_in_q <= PACING_DAYS).map(r => {{
-      const pacedConv = r.converted && r.to_days_from_q_start !== null && r.to_days_from_q_start <= PACING_DAYS;
+      const pacedConv = r.converted && r.to_days_from_q_start !== null && r.to_days_from_q_start < PACING_DAYS + 1;
       return Object.assign({{}}, r, {{ converted: pacedConv }});
     }});
   }}
