@@ -97,7 +97,7 @@ def prepare_entered(merged: pd.DataFrame, from_stage: str, to_stage: str):
         return None
 
     entered["converted"] = entered[to_stage].notna()
-    entered["is_lost"] = entered["stage"] == "Closed Lost"
+    entered["is_lost"] = ~entered["converted"] & (entered["stage"] == "Closed Lost")
     entered["in_play"] = ~entered["converted"] & ~entered["stage"].isin(["Closed Won", "Closed Lost"])
     entered["days_since_entry"] = (datetime.now(timezone.utc) - entered[from_stage]).dt.total_seconds() / 86400
     # For Method C pacing: days between from-stage quarter start and to-stage entry
