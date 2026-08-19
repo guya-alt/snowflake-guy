@@ -22,7 +22,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python deps
-        run: pip install pandas snowflake-connector-python requests
+        run: pip install pandas snowflake-connector-python requests pydantic
 
       - name: Write Snowflake connections.toml
         env:
