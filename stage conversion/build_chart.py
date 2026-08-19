@@ -490,7 +490,7 @@ const PLOTLY_LAYOUT = {{
   }},
   yaxis: {{
     title: {{ text: 'Conversion %', font: {{ size: 11, color: '#898781' }} }},
-    rangemode: 'tozero', ticksuffix: '%',
+    range: [0, 105], ticksuffix: '%',
     tickfont: {{ size: 11, color: '#898781' }},
     gridcolor: '#e1e0d9', gridwidth: 1, zeroline: false,
     linecolor: '#c3c2b7', linewidth: 1,
