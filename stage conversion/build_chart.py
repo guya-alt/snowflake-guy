@@ -249,12 +249,13 @@ def compute_raw_data(merged: pd.DataFrame):
 
 
 
-def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_days: int, raw_closed: dict, raw_all: dict, generated_at: str):
+def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_days: int, raw_closed: dict, raw_all: dict, generated_at: str, filter_values: dict = None):
     stages_json = json.dumps(CHART_STAGES)
     data_closed_json = json.dumps(data_closed)
     data_all_json = json.dumps(data_all)
     raw_closed_json = json.dumps(raw_closed)
     raw_all_json = json.dumps(raw_all)
+    filter_values_json = json.dumps(filter_values or {})
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -377,6 +378,26 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
     border-radius:6px;line-height:1.6;
   }}
   .foot b{{color:#52514e}}
+
+  .filters{{
+    display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+    padding:10px 16px;background:#fcfcfb;border:1px solid #e1e0d9;
+    border-radius:8px;margin-bottom:20px;margin-top:-12px;
+  }}
+  .filters .f-label{{font-size:10px;font-weight:700;color:#898781;text-transform:uppercase;letter-spacing:.06em;margin-right:4px}}
+  .f-group{{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-right:12px}}
+  .f-chip{{
+    padding:4px 10px;border:1px solid #e1e0d9;border-radius:14px;
+    font:500 11px/1.3 system-ui,sans-serif;color:#898781;background:#fff;
+    cursor:pointer;transition:.15s;user-select:none;white-space:nowrap;
+  }}
+  .f-chip:hover{{border-color:#2a78d6;color:#2a78d6}}
+  .f-chip.active{{background:#2a78d6;color:#fff;border-color:#2a78d6}}
+  .f-clear{{
+    font:500 11px/1 system-ui,sans-serif;color:#898781;cursor:pointer;
+    padding:4px 8px;border:none;background:none;transition:.15s;
+  }}
+  .f-clear:hover{{color:#2a78d6}}
 </style>
 </head>
 <body>
@@ -424,6 +445,8 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
   </div>
 </div>
 
+<div class="filters" id="filterBar"></div>
+
 <div class="chart-card">
   <h2 id="chart-title"></h2>
   <div class="subtitle" id="chart-sub"></div>
@@ -469,6 +492,7 @@ const DATA_ALL = {data_all_json};
 const RAW_CLOSED = {raw_closed_json};
 const RAW_ALL = {raw_all_json};
 const PACING_DAYS = {pacing_days};
+const FILTER_VALUES = {filter_values_json};
 const GENERATED_AT = "{generated_at}";
 const COLORS = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300','#4a3aa7','#e34948'];
 const TARGETS = {{
@@ -550,6 +574,109 @@ const toSelect = document.getElementById('toStage');
 const viewSelect = document.getElementById('viewMode');
 const breakdownSelect = document.getElementById('breakdown');
 
+var activeFilters = {{ team: [], geo: [], mega_source: [] }};
+(function buildFilterChips() {{
+  var bar = document.getElementById('filterBar');
+  var dims = [['team','Team'], ['geo','Geo'], ['mega_source','Source']];
+  dims.forEach(function(d) {{
+    var key = d[0], label = d[1];
+    var vals = FILTER_VALUES[key] || [];
+    if (!vals.length) return;
+    var grp = document.createElement('div');
+    grp.className = 'f-group';
+    grp.innerHTML = '<span class="f-label">' + label + '</span>';
+    vals.forEach(function(v) {{
+      var chip = document.createElement('span');
+      chip.className = 'f-chip';
+      chip.textContent = v;
+      chip.dataset.dim = key;
+      chip.dataset.val = v;
+      chip.onclick = function() {{
+        chip.classList.toggle('active');
+        var sel = activeFilters[key];
+        var idx = sel.indexOf(v);
+        if (idx >= 0) sel.splice(idx, 1); else sel.push(v);
+        updateChart();
+      }};
+      grp.appendChild(chip);
+    }});
+    bar.appendChild(grp);
+  }});
+  var clr = document.createElement('button');
+  clr.className = 'f-clear';
+  clr.textContent = 'Clear';
+  clr.onclick = function() {{
+    activeFilters = {{ team: [], geo: [], mega_source: [] }};
+    bar.querySelectorAll('.f-chip').forEach(function(c) {{ c.classList.remove('active'); }});
+    updateChart();
+  }};
+  bar.appendChild(clr);
+}})();
+
+function hasActiveFilters() {{
+  return activeFilters.team.length > 0 || activeFilters.geo.length > 0 || activeFilters.mega_source.length > 0;
+}}
+
+function filterRecords(records) {{
+  return records.filter(function(r) {{
+    if (activeFilters.team.length && activeFilters.team.indexOf(r.team) < 0) return false;
+    if (activeFilters.geo.length && activeFilters.geo.indexOf(r.geo) < 0) return false;
+    if (activeFilters.mega_source.length && activeFilters.mega_source.indexOf(r.mega_source) < 0) return false;
+    return true;
+  }});
+}}
+
+function aggregateRaw(records, pacing, breakdown) {{
+  var byGroup = {{}};
+  records.forEach(function(r) {{
+    var g = breakdown === 'none' ? 'All' : (r[breakdown] || 'Unknown');
+    if (!byGroup[g]) byGroup[g] = {{}};
+    if (!byGroup[g][r.quarter]) byGroup[g][r.quarter] = [];
+    byGroup[g][r.quarter].push(r);
+  }});
+
+  var result = {{}};
+  Object.keys(byGroup).forEach(function(g) {{
+    var qData = byGroup[g];
+    var full_arr = [], paced_arr = [];
+    Object.keys(qData).sort().forEach(function(q) {{
+      var deals = qData[q];
+      var da = 0, na = 0, la = 0, ipa = 0;
+      deals.forEach(function(d) {{
+        da += d.amount || 0;
+        if (d.converted) na += d.amount || 0;
+        else if (d.current_stage === 'Closed Lost') la += d.amount || 0;
+        else if (d.current_stage !== 'Closed Won') ipa += d.amount || 0;
+      }});
+      var res_da = na + la;
+      full_arr.push({{
+        quarter: q,
+        rate: da > 0 ? na / da * 100 : null,
+        numerator: na, denominator: da,
+        ceiling: da > 0 ? (na + ipa) / da * 100 : null,
+        lost: la, in_play: ipa,
+        resolution_rate: res_da > 0 ? na / res_da * 100 : null,
+      }});
+
+      if (pacing === 'paced') {{
+        var pq = deals.filter(function(d) {{ return d.days_in_q <= PACING_DAYS; }});
+        var pda = 0, pna = 0;
+        pq.forEach(function(d) {{
+          pda += d.amount || 0;
+          if (d.converted && d.to_days_from_q_start !== null && d.to_days_from_q_start < PACING_DAYS + 1) pna += d.amount || 0;
+        }});
+        paced_arr.push({{
+          quarter: q,
+          rate: pda > 0 ? pna / pda * 100 : null,
+          numerator: pna, denominator: pda,
+        }});
+      }}
+    }});
+    result[g] = {{ full_arr: full_arr, paced_arr: paced_arr }};
+  }});
+  return result;
+}}
+
 function viewParams() {{
   var v = viewSelect.value;
   if (v === 'paced') return {{ pacing: 'paced', closed: 'closed', resolution: false }};
@@ -587,7 +714,6 @@ function updateChart() {{
   const breakdown = breakdownSelect.value;
   const metric = 'arr';
 
-  const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const key = from + '|' + to;
   const seriesKey = pacing + '_' + metric;
 
@@ -605,7 +731,31 @@ function updateChart() {{
   }}
   document.getElementById('chart-sub').textContent = sub;
 
-  if (!DATA[key] || !DATA[key][breakdown]) {{
+  var dimData;
+  var useRaw = hasActiveFilters();
+  if (useRaw) {{
+    var RAW = closed === 'closed' ? RAW_CLOSED : RAW_ALL;
+    var rawRecs = RAW[key] || [];
+    rawRecs = filterRecords(rawRecs);
+    var agg = aggregateRaw(rawRecs, pacing, breakdown);
+    dimData = {{}};
+    Object.keys(agg).forEach(function(g) {{
+      dimData[g] = {{ full_arr: agg[g].full_arr, paced_arr: agg[g].paced_arr }};
+    }});
+  }} else {{
+    var DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
+    if (!DATA[key] || !DATA[key][breakdown]) {{
+      Plotly.react('chart', [], Object.assign({{}}, PLOTLY_LAYOUT, {{
+        annotations: [{{text: 'No data for this combination', showarrow: false, font: {{size: 14, color: '#898781'}}}}],
+        xaxis: {{visible: false}}, yaxis: {{visible: false}}
+      }}), PCFG);
+      updateRawTable(from, to, pacing, closed);
+      return;
+    }}
+    dimData = DATA[key][breakdown];
+  }}
+
+  if (!dimData || Object.keys(dimData).length === 0) {{
     Plotly.react('chart', [], Object.assign({{}}, PLOTLY_LAYOUT, {{
       annotations: [{{text: 'No data for this combination', showarrow: false, font: {{size: 14, color: '#898781'}}}}],
       xaxis: {{visible: false}}, yaxis: {{visible: false}}
@@ -614,7 +764,6 @@ function updateChart() {{
     return;
   }}
 
-  const dimData = DATA[key][breakdown];
   const traces = [];
   const groups = Object.keys(dimData).sort();
 
@@ -754,10 +903,19 @@ function updateChart2() {{
   }}
   document.getElementById('chart2-sub').textContent = sub2;
 
+  var useRaw2 = hasActiveFilters();
   stagesForWon.forEach(function(stage, idx) {{
     const key = stage + '|Closed Won';
-    if (!DATA[key] || !DATA[key]['none'] || !DATA[key]['none']['All']) return;
-    const series = DATA[key]['none']['All'][seriesKey];
+    var series;
+    if (useRaw2) {{
+      var RAW2 = closed === 'closed' ? RAW_CLOSED : RAW_ALL;
+      var recs2 = filterRecords((RAW2[key] || []).slice());
+      var agg2 = aggregateRaw(recs2, pacing, 'none');
+      series = agg2['All'] ? agg2['All'][seriesKey] : null;
+    }} else {{
+      if (!DATA[key] || !DATA[key]['none'] || !DATA[key]['none']['All']) return;
+      series = DATA[key]['none']['All'][seriesKey];
+    }}
     if (!series || series.length === 0) return;
 
     traces2.push({{
@@ -808,6 +966,7 @@ function updateRawTable(from, to, pacing, closed) {{
   const RAW = closed === 'closed' ? RAW_CLOSED : RAW_ALL;
   const key = from + '|' + to;
   let records = (RAW[key] || []).slice();
+  if (hasActiveFilters()) records = filterRecords(records);
 
   if (pacing === 'paced') {{
     records = records.filter(function(r) {{ return r.days_in_q <= PACING_DAYS; }}).map(function(r) {{
@@ -993,8 +1152,15 @@ def main():
     raw_closed = compute_raw_data(merged_closed)
     raw_all = compute_raw_data(merged_all)
 
+    all_records = [r for recs in raw_all.values() for r in recs]
+    filter_values = {
+        "team": sorted({r["team"] for r in all_records if r["team"]}),
+        "geo": sorted({r["geo"] for r in all_records if r["geo"]}),
+        "mega_source": sorted({r["mega_source"] for r in all_records if r["mega_source"]}),
+    }
+
     generated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    html = build_html(data_closed, data_all, current_q_label, pacing_days, raw_closed, raw_all, generated_at)
+    html = build_html(data_closed, data_all, current_q_label, pacing_days, raw_closed, raw_all, generated_at, filter_values)
     output_path = os.path.join(FOLDER, "conversion_chart.html")
     with open(output_path, "w") as f:
         f.write(html)
