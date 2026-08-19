@@ -473,6 +473,16 @@ const PLOTLY_LAYOUT = {{
 }};
 const PCFG = {{ displayModeBar: false, responsive: true }};
 
+function sortedQuarters(traces) {{
+  var seen = {{}};
+  traces.forEach(function(t) {{ t.x.forEach(function(q) {{ seen[q] = 1; }}); }});
+  return Object.keys(seen).sort(function(a, b) {{
+    var pa = a.match(/Q(\\d)\\s+(\\d{{4}})/), pb = b.match(/Q(\\d)\\s+(\\d{{4}})/);
+    if (!pa || !pb) return a < b ? -1 : 1;
+    return (+pa[2] * 10 + +pa[1]) - (+pb[2] * 10 + +pb[1]);
+  }});
+}}
+
 function fmtK(n) {{
   if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
   if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
@@ -611,8 +621,10 @@ function updateChart() {{
     }});
   }}
 
+  var allQ = sortedQuarters(traces);
   Plotly.react('chart', traces, Object.assign({{}}, PLOTLY_LAYOUT, {{
     showlegend: groups.length > 1 || target !== null,
+    xaxis: Object.assign({{}}, PLOTLY_LAYOUT.xaxis, {{ categoryorder: 'array', categoryarray: allQ }}),
   }}), PCFG);
   bindHighlight('chart');
   updateRawTable(from, to, pacing, closed);
@@ -650,8 +662,10 @@ function updateChart2() {{
     }});
   }});
 
+  var allQ2 = sortedQuarters(traces2);
   Plotly.react('chart2', traces2, Object.assign({{}}, PLOTLY_LAYOUT, {{
     showlegend: true,
+    xaxis: Object.assign({{}}, PLOTLY_LAYOUT.xaxis, {{ categoryorder: 'array', categoryarray: allQ2 }}),
   }}), PCFG);
   bindHighlight('chart2');
 }}
