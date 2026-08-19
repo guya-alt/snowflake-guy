@@ -565,7 +565,8 @@ function updateChart() {{
 
   const targetKey = from + '|' + to;
   const target = (
-    closed === 'closed' && breakdown === 'none' && TARGETS[targetKey] !== undefined
+    metric === 'arr' && pacing === 'full' && closed === 'closed'
+    && breakdown === 'none' && TARGETS[targetKey] !== undefined
   ) ? TARGETS[targetKey] : null;
 
   if (target !== null && traces.length > 0) {{
