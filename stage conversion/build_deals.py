@@ -401,7 +401,7 @@ class Deal(BaseModel):
         owners = owners or {}
 
         return cls(
-            id=raw["id"],
+            id=str(raw["id"]),
             name=props.get("dealname", ""),
             amount=props.get("amount"),
             pipeline_id=pipeline_id,
@@ -417,8 +417,8 @@ class Deal(BaseModel):
             geo=props.get("geography") or None,
             mega_source=props.get("mega_source") or None,
             deal_source=props.get("deal_source") or None,
-            created_at=raw["createdAt"],
-            updated_at=raw["updatedAt"],
+            created_at=raw.get("createdAt") or props.get("createdate", ""),
+            updated_at=raw.get("updatedAt") or props.get("hs_lastmodifieddate", ""),
             qualified_date=props.get("qualified_date"),
             url=raw.get("url", ""),
             stage_timestamps=StageTimestamps.from_properties(props),
