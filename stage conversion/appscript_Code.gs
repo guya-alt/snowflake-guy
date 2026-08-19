@@ -12,7 +12,7 @@
 //      WORKFLOW_FILE   — "refresh-dashboard.yml"
 // 4. Deploy → New Deployment → "Web app" → Execute as: Me → Anyone with link.
 
-const COOLDOWN_MS = 5 * 60 * 1000;
+const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 function _ghHeaders(accept) {
   return {

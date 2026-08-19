@@ -11,6 +11,7 @@ import pandas as pd
 
 from build_deals import (
     CLASSIC_STAGE_ORDER,
+    OWNERS,
     load_json_files,
     deduplicate,
     deals_to_dataframe,
@@ -33,7 +34,7 @@ def load_data():
     if os.path.exists(fresh_path):
         with open(fresh_path) as fh:
             data = _json.load(fh)
-        raw = [Deal.from_raw(r) for r in data.get("results", [])]
+        raw = [Deal.from_raw(r, OWNERS) for r in data.get("results", [])]
         print(f"Loaded {len(raw)} deal records from hubspot_deals.json")
     else:
         files = [
@@ -64,7 +65,7 @@ def load_data():
 
     merged_all = all_ts_df.merge(
         all_deals_df[["deal_id", "deal_name", "amount", "qualified_date",
-                       "team", "geo", "mega_source", "deal_source", "stage"]],
+                       "owner", "team", "geo", "mega_source", "deal_source", "stage"]],
         on="deal_id", how="left",
     )
 
@@ -212,7 +213,7 @@ def compute_raw_data(merged: pd.DataFrame):
                 records.append({
                     "deal_id": row["deal_id"],
                     "deal_name": row.get("deal_name", "") or "",
-                    "company_name": "",
+                    "owner": row.get("owner", "") or "",
                     "team": row.get("team", "") or "",
                     "geo": row.get("geo", "") or "",
                     "mega_source": row.get("mega_source", "") or "",
@@ -479,7 +480,7 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
 <div id="raw-section">
   <h3>Raw Data</h3>
   <div class="raw-controls">
-    <input type="text" id="raw-filter" placeholder="Filter by name, company, team, geo, source...">
+    <input type="text" id="raw-filter" placeholder="Filter by name, owner, team, geo, source...">
     <select id="raw-conv-filter">
       <option value="all">All</option>
       <option value="yes">Converted Only</option>
@@ -723,7 +724,7 @@ function renderTable() {{
   if (filterText) {{
     records = records.filter(r =>
       (r.deal_name || '').toLowerCase().includes(filterText) ||
-      (r.company_name || '').toLowerCase().includes(filterText) ||
+      (r.owner || '').toLowerCase().includes(filterText) ||
       (r.team || '').toLowerCase().includes(filterText) ||
       (r.geo || '').toLowerCase().includes(filterText) ||
       (r.mega_source || '').toLowerCase().includes(filterText) ||
@@ -748,8 +749,9 @@ function renderTable() {{
   }}
 
   const cols = [
+    {{key: 'deal_id', label: 'Deal ID'}},
     {{key: 'deal_name', label: 'Deal Name'}},
-    {{key: 'company_name', label: 'Company'}},
+    {{key: 'owner', label: 'Owner'}},
     {{key: 'team', label: 'Team'}},
     {{key: 'geo', label: 'Geo'}},
     {{key: 'mega_source', label: 'Source'}},
@@ -773,7 +775,7 @@ function renderTable() {{
     const cc = r.converted ? 'converted-yes' : 'converted-no';
     const ct = r.converted ? 'Y' : 'N';
     const amt = r.amount ? '$' + Math.round(r.amount).toLocaleString() : '-';
-    return '<tr><td>' + (r.deal_name || r.deal_id) + '</td><td>' + (r.company_name || '-') + '</td><td>' + (r.team || '-') + '</td><td>' + (r.geo || '-') + '</td><td>' + (r.mega_source || '-') + '</td><td>' + (r.current_stage || '-') + '</td><td>' + amt + '</td><td>' + r.quarter + '</td><td>' + (r.from_date || '-') + '</td><td>' + (r.to_date || '-') + '</td><td class="' + cc + '">' + ct + '</td></tr>';
+    return '<tr><td>' + (r.deal_id || '-') + '</td><td>' + (r.deal_name || '-') + '</td><td>' + (r.owner || '-') + '</td><td>' + (r.team || '-') + '</td><td>' + (r.geo || '-') + '</td><td>' + (r.mega_source || '-') + '</td><td>' + (r.current_stage || '-') + '</td><td>' + amt + '</td><td>' + r.quarter + '</td><td>' + (r.from_date || '-') + '</td><td>' + (r.to_date || '-') + '</td><td class="' + cc + '">' + ct + '</td></tr>';
   }}).join('');
 
   document.getElementById('deal-count-label').textContent = records.length + ' of ' + currentRecords.length + ' deals';
