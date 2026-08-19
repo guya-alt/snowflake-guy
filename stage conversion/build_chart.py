@@ -608,15 +608,13 @@ function updateChart() {{
   var ml = metric === 'arr' ? 'ARR' : 'deals';
   var sub;
   if (pacing === 'paced') {{
-    sub = 'What % of ' + ml + ' entering ' + from + ' reached ' + to + ' within ' + PACING_DAYS + ' days? Same cutoff every quarter.';
+    sub = 'How much ' + ml + ' moved from ' + from + ' to ' + to + ' within ' + PACING_DAYS + ' days?';
   }} else if (useResolution) {{
-    sub = 'Of deals with a known outcome at ' + from + ', what % of ' + ml + ' converted to ' + to + '?';
-    if (closed === 'all') sub += ' Deals still in pipeline are excluded.';
-    else sub += ' Closed deals only.';
+    sub = 'When ' + ml + ' at ' + from + ' reaches an outcome, how often does it reach ' + to + '?';
+  }} else if (closed === 'all') {{
+    sub = 'How much ' + ml + ' entering ' + from + ' reached ' + to + '? Recent quarters may still grow.';
   }} else {{
-    sub = 'What % of ' + ml + ' entering ' + from + ' converted to ' + to + '?';
-    if (closed === 'all') sub += ' Includes deals still in pipeline — recent quarters may increase.';
-    else sub += ' Closed deals only.';
+    sub = 'How much ' + ml + ' entering ' + from + ' reached ' + to + '?';
   }}
   document.getElementById('chart-sub').textContent = sub;
 
