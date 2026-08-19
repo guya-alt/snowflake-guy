@@ -565,8 +565,7 @@ function updateChart() {{
 
   const targetKey = from + '|' + to;
   const target = (
-    metric === 'arr' && pacing === 'full' && closed === 'closed'
-    && breakdown === 'none' && TARGETS[targetKey] !== undefined
+    closed === 'closed' && breakdown === 'none' && TARGETS[targetKey] !== undefined
   ) ? TARGETS[targetKey] : null;
 
   if (target !== null && traces.length > 0) {{
@@ -575,8 +574,9 @@ function updateChart() {{
       y: traces[0].x.map(function() {{ return target; }}),
       type: 'scatter', mode: 'lines',
       name: 'Target ' + target + '%',
-      line: {{ color: '#006300', width: 1.5, dash: 'dot' }},
-      hoverinfo: 'skip',
+      line: {{ color: '#d03b3b', width: 2, dash: 'dash' }},
+      hovertext: traces[0].x.map(function() {{ return '<b>Target: ' + target + '%</b>'; }}),
+      hoverinfo: 'text',
     }});
   }}
 
