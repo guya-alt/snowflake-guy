@@ -618,9 +618,26 @@ function updateChart() {{
   const traces = [];
   const groups = Object.keys(dimData).sort();
 
+  var allQSet = {{}};
+  groups.forEach(function(g) {{
+    var s = dimData[g][seriesKey];
+    if (s) s.forEach(function(d) {{ allQSet[d.quarter] = 1; }});
+  }});
+  var allQList = Object.keys(allQSet).sort(function(a, b) {{
+    var pa = a.match(/Q(\\d)\\s+(\\d{{4}})/), pb = b.match(/Q(\\d)\\s+(\\d{{4}})/);
+    if (!pa || !pb) return a < b ? -1 : 1;
+    return (+pa[2] * 10 + +pa[1]) - (+pb[2] * 10 + +pb[1]);
+  }});
+
   groups.forEach(function(groupName, idx) {{
-    const series = dimData[groupName][seriesKey];
-    if (!series || series.length === 0) return;
+    const raw = dimData[groupName][seriesKey];
+    if (!raw || raw.length === 0) return;
+
+    var byQ = {{}};
+    raw.forEach(function(d) {{ byQ[d.quarter] = d; }});
+    var series = allQList.map(function(q) {{
+      return byQ[q] || {{ quarter: q, rate: 0, numerator: 0, denominator: 0, resolution_rate: 0, lost: 0, in_play: 0 }};
+    }});
 
     const x = series.map(function(d) {{ return d.quarter; }});
     const y = series.map(function(d) {{
