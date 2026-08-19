@@ -97,6 +97,9 @@ def prepare_entered(merged: pd.DataFrame, from_stage: str, to_stage: str):
         return None
 
     entered["converted"] = entered[to_stage].notna()
+    entered["is_lost"] = entered["stage"] == "Closed Lost"
+    entered["in_play"] = ~entered["converted"] & ~entered["stage"].isin(["Closed Won", "Closed Lost"])
+    entered["days_since_entry"] = (datetime.now(timezone.utc) - entered[from_stage]).dt.total_seconds() / 86400
     # For Method C pacing: days between from-stage quarter start and to-stage entry
     entered["to_days_from_q_start"] = (
         (entered[to_stage] - entered["from_q_start"]).dt.total_seconds() / 86400
@@ -121,8 +124,37 @@ def compute_series(subset: pd.DataFrame, pacing_days: int):
         nc = int(q_deals["converted"].sum())
         na = q_deals.loc[q_deals["converted"], "amount"].sum()
 
-        full_deals.append({"quarter": q_label, "rate": (nc / dc * 100) if dc > 0 else None, "numerator": nc, "denominator": dc})
-        full_arr.append({"quarter": q_label, "rate": (na / da * 100) if da > 0 else None, "numerator": float(na), "denominator": float(da)})
+        lost_mask = q_deals["is_lost"]
+        in_play_mask = q_deals["in_play"]
+        lc = int(lost_mask.sum())
+        la = float(q_deals.loc[lost_mask, "amount"].sum())
+        ipc = int(in_play_mask.sum())
+        ipa = float(q_deals.loc[in_play_mask, "amount"].sum())
+
+        ip = q_deals[in_play_mask]
+        age = ip["days_since_entry"]
+        bands_c = [int((age <= 30).sum()), int(((age > 30) & (age <= 60)).sum()),
+                    int(((age > 60) & (age <= 90)).sum()), int((age > 90).sum())]
+        bands_a = [float(ip.loc[age <= 30, "amount"].sum()), float(ip.loc[(age > 30) & (age <= 60), "amount"].sum()),
+                    float(ip.loc[(age > 60) & (age <= 90), "amount"].sum()), float(ip.loc[age > 90, "amount"].sum())]
+
+        res_dc = nc + lc
+        res_da = na + la
+
+        full_deals.append({
+            "quarter": q_label, "rate": (nc / dc * 100) if dc > 0 else None,
+            "numerator": nc, "denominator": dc,
+            "ceiling": ((nc + ipc) / dc * 100) if dc > 0 else None,
+            "bands": bands_c, "lost": lc, "in_play": ipc,
+            "resolution_rate": (nc / res_dc * 100) if res_dc > 0 else None,
+        })
+        full_arr.append({
+            "quarter": q_label, "rate": (na / da * 100) if da > 0 else None,
+            "numerator": float(na), "denominator": float(da),
+            "ceiling": ((na + ipa) / da * 100) if da > 0 else None,
+            "bands": bands_a, "lost": float(la), "in_play": float(ipa),
+            "resolution_rate": (na / res_da * 100) if res_da > 0 else None,
+        })
 
         # Paced (Method C): both cohort AND numerator are clipped to first `pacing_days` of quarter
         # - Cohort: deals that entered from-stage in first `pacing_days` days of quarter
@@ -390,6 +422,13 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
       <option value="all">All Deals</option>
     </select>
   </div>
+  <div class="ctrl" id="rateTypeCtrl" style="display:none">
+    <label>Rate Type <span class="info-i">i<span class="tip"><strong>Standard:</strong> converted / all deals entered.<br><br><strong>Resolution:</strong> converted / (converted + lost). Only measures deals whose fate is known &mdash; excludes deals still in stage. Smoothed by cohort entry date.</span></span></label>
+    <select id="rateType">
+      <option value="standard">Standard</option>
+      <option value="resolution">Resolution</option>
+    </select>
+  </div>
   <div class="ctrl">
     <label>Breakdown</label>
     <select id="breakdown">
@@ -524,6 +563,8 @@ const toSelect = document.getElementById('toStage');
 const metricSelect = document.getElementById('metric');
 const pacingSelect = document.getElementById('pacing');
 const closedFilter = document.getElementById('closedFilter');
+const rateTypeSelect = document.getElementById('rateType');
+const rateTypeCtrl = document.getElementById('rateTypeCtrl');
 const breakdownSelect = document.getElementById('breakdown');
 
 STAGES.slice(0, -1).forEach(function(s, i) {{
@@ -551,17 +592,23 @@ function updateChart() {{
   const metric = metricSelect.value;
   const pacing = pacingSelect.value;
   const closed = closedFilter.value;
+  const rateType = rateTypeSelect.value;
   const breakdown = breakdownSelect.value;
+
+  rateTypeCtrl.style.display = pacing === 'full' ? '' : 'none';
+  if (pacing !== 'full') rateTypeSelect.value = 'standard';
+  const useResolution = pacing === 'full' && rateType === 'resolution';
 
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const key = from + '|' + to;
   const seriesKey = pacing + '_' + metric;
 
   const brkLabel = breakdown === 'none' ? '' : ' by ' + {{team:'Team',geo:'Geo',mega_source:'Mega Source'}}[breakdown];
+  var rateLabel = useResolution ? '  ·  Resolution rate' : '';
   document.getElementById('chart-title').textContent = from + ' → ' + to + brkLabel;
   document.getElementById('chart-sub').textContent =
     'Of deals entering ' + from + ' each quarter, what % reached ' + to + '?' +
-    (pacing === 'paced' ? '  ·  Paced at day ' + PACING_DAYS : '');
+    (pacing === 'paced' ? '  ·  Paced at day ' + PACING_DAYS : '') + rateLabel;
 
   if (!DATA[key] || !DATA[key][breakdown]) {{
     Plotly.react('chart', [], Object.assign({{}}, PLOTLY_LAYOUT, {{
@@ -581,11 +628,25 @@ function updateChart() {{
     if (!series || series.length === 0) return;
 
     const x = series.map(function(d) {{ return d.quarter; }});
-    const y = series.map(function(d) {{ return d.rate; }});
+    const y = series.map(function(d) {{
+      if (useResolution && d.resolution_rate !== undefined && d.resolution_rate !== null) return d.resolution_rate;
+      return d.rate;
+    }});
     const hoverText = series.map(function(d) {{
-      const pct = d.rate !== null ? d.rate.toFixed(1) + '%' : 'N/A';
-      if (metric === 'deals') return '<b>' + pct + '</b>  ' + groupName + '  (' + d.numerator + '/' + d.denominator + ')';
-      return '<b>' + pct + '</b>  ' + groupName + '  (' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
+      var rate = useResolution ? d.resolution_rate : d.rate;
+      var pct = rate !== null && rate !== undefined ? rate.toFixed(1) + '%' : 'N/A';
+      var detail;
+      if (useResolution) {{
+        var resolved = d.numerator + (d.lost || 0);
+        detail = metric === 'deals' ? '(' + d.numerator + '/' + resolved + ' resolved)' : '(' + fmtK(d.numerator) + '/' + fmtK(d.numerator + (d.lost || 0)) + ' resolved)';
+      }} else {{
+        detail = metric === 'deals' ? '(' + d.numerator + '/' + d.denominator + ')' : '(' + fmtK(d.numerator) + '/' + fmtK(d.denominator) + ')';
+      }}
+      var line = '<b>' + pct + '</b>  ' + groupName + '  ' + detail;
+      if (d.in_play && d.ceiling !== undefined && !useResolution && breakdown === 'none') {{
+        line += '<br><span style="color:#898781">Ceiling: ' + d.ceiling.toFixed(1) + '%  (' + (metric === 'deals' ? d.in_play + ' in stage' : fmtK(d.in_play) + ' in stage') + ')</span>';
+      }}
+      return line;
     }});
 
     traces.push({{
@@ -602,6 +663,34 @@ function updateChart() {{
       marker: {{ size: 8, line: {{ color: '#fcfcfb', width: 2 }} }},
     }});
   }});
+
+  if (breakdown === 'none' && pacing === 'full' && !useResolution && traces.length === 1) {{
+    var mainSeries = dimData[groups[0]][seriesKey];
+    if (mainSeries && mainSeries.length > 0 && mainSeries[0].bands) {{
+      var bandColors = ['rgba(42,120,214,0.10)', 'rgba(237,161,0,0.14)', 'rgba(235,104,52,0.20)', 'rgba(211,59,59,0.28)'];
+      var bandLabels = ['0–30d', '30–60d', '60–90d', '90d+'];
+      var prevY = mainSeries.map(function(d) {{ return d.rate || 0; }});
+      for (var b = 0; b < 4; b++) {{
+        var bandY = mainSeries.map(function(d, i) {{
+          var base = prevY[i];
+          if (!d.bands || d.denominator === 0) return base;
+          var bandVal = d.bands[b];
+          return base + (bandVal / d.denominator * 100);
+        }});
+        traces.push({{
+          x: mainSeries.map(function(d) {{ return d.quarter; }}),
+          y: bandY,
+          type: 'scatter', mode: 'none',
+          fill: 'tonexty',
+          fillcolor: bandColors[b],
+          name: 'Potential (' + bandLabels[b] + ')',
+          showlegend: false,
+          hoverinfo: 'skip',
+        }});
+        prevY = bandY;
+      }}
+    }}
+  }}
 
   const targetKey = from + '|' + to;
   const target = (
@@ -784,6 +873,7 @@ toSelect.addEventListener('change', updateChart);
 metricSelect.addEventListener('change', updateChart);
 pacingSelect.addEventListener('change', updateChart);
 closedFilter.addEventListener('change', updateChart);
+rateTypeSelect.addEventListener('change', updateChart);
 breakdownSelect.addEventListener('change', updateChart);
 
 var _gen = new Date(GENERATED_AT);
