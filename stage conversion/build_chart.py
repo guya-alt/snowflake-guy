@@ -96,7 +96,11 @@ def prepare_entered(merged: pd.DataFrame, from_stage: str, to_stage: str):
     if entered.empty:
         return None
 
-    entered["converted"] = entered[to_stage].notna()
+    to_idx = CHART_STAGES.index(to_stage) if to_stage in CHART_STAGES else -1
+    stage_at_or_past = entered["stage"].apply(
+        lambda s: CHART_STAGES.index(s) >= to_idx if s in CHART_STAGES and to_idx >= 0 else False
+    )
+    entered["converted"] = entered[to_stage].notna() | stage_at_or_past
     entered["is_lost"] = ~entered["converted"] & (entered["stage"] == "Closed Lost")
     entered["in_play"] = ~entered["converted"] & ~entered["stage"].isin(["Closed Won", "Closed Lost"])
     entered["days_since_entry"] = (datetime.now(timezone.utc) - entered[from_stage]).dt.total_seconds() / 86400
