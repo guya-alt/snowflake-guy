@@ -439,6 +439,13 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
     </select>
   </div>
   <div class="ctrl">
+    <label>Metric</label>
+    <select id="metricSelect">
+      <option value="arr">ARR</option>
+      <option value="deals">Deals</option>
+    </select>
+  </div>
+  <div class="ctrl">
     <label>Breakdown</label>
     <select id="breakdown">
       <option value="none">None</option>
@@ -539,10 +546,14 @@ function sortedQuarters(traces) {{
   }});
 }}
 
-function fmtK(n) {{
-  if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
-  if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
-  return '$' + n.toLocaleString();
+function fmtK(n, isDollars) {{
+  if (isDollars === undefined) isDollars = metricSelect.value === 'arr';
+  if (isDollars) {{
+    if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
+    return '$' + n.toLocaleString();
+  }}
+  return n.toLocaleString();
 }}
 
 var _hl = {{}};
@@ -578,6 +589,7 @@ function bindHighlight(chartId) {{
 const fromSelect = document.getElementById('fromStage');
 const toSelect = document.getElementById('toStage');
 const viewSelect = document.getElementById('viewMode');
+const metricSelect = document.getElementById('metricSelect');
 const breakdownSelect = document.getElementById('breakdown');
 
 var activeFilters = {{ team: [], geo: [], mega_source: [] }};
@@ -718,22 +730,24 @@ function updateChart() {{
   const closed = vp.closed;
   const useResolution = vp.resolution;
   const breakdown = breakdownSelect.value;
-  const metric = 'arr';
+  const metric = metricSelect.value;
 
   const key = from + '|' + to;
   const seriesKey = pacing + '_' + metric;
 
+  const metricLabel = metric === 'arr' ? 'ARR' : 'Deal Count';
   const brkLabel = breakdown === 'none' ? '' : ' by ' + {{team:'Team',geo:'Geo',mega_source:'Mega Source'}}[breakdown];
   document.getElementById('chart-title').textContent = from + ' → ' + to + brkLabel;
   var sub;
+  var what = metric === 'arr' ? 'ARR' : 'deals';
   if (pacing === 'paced') {{
-    sub = 'How much ARR moved from ' + from + ' to ' + to + ' within ' + PACING_DAYS + ' days?';
+    sub = 'How much ' + what + ' moved from ' + from + ' to ' + to + ' within ' + PACING_DAYS + ' days?';
   }} else if (useResolution) {{
-    sub = 'When ARR at ' + from + ' reaches an outcome, how often does it reach ' + to + '?';
+    sub = 'When ' + what + ' at ' + from + ' reaches an outcome, how often does it reach ' + to + '?';
   }} else if (closed === 'all') {{
-    sub = 'How much ARR entering ' + from + ' reached ' + to + '? Recent quarters may still grow.';
+    sub = 'How much ' + what + ' entering ' + from + ' reached ' + to + '? Recent quarters may still grow.';
   }} else {{
-    sub = 'How much ARR entering ' + from + ' reached ' + to + '?';
+    sub = 'How much ' + what + ' entering ' + from + ' reached ' + to + '?';
   }}
   document.getElementById('chart-sub').textContent = sub;
 
@@ -847,7 +861,8 @@ function updateChart() {{
         var bHover = mainSeries.map(function(d, i) {{
           if (!d.bands || d.denominator === 0) return '';
           var bandVal = d.bands[b];
-          return '<b>' + bandLabels[b] + '</b>  ' + fmtK(bandVal) + ' ARR in stage (' + bandHints[b] + ')';
+          var unit = metric === 'arr' ? 'ARR' : 'deals';
+          return '<b>' + bandLabels[b] + '</b>  ' + fmtK(bandVal) + ' ' + unit + ' in stage (' + bandHints[b] + ')';
         }});
         traces.push({{
           x: mainSeries.map(function(d) {{ return d.quarter; }}),
@@ -909,7 +924,7 @@ function updateChart2() {{
   const pacing = vp.pacing;
   const closed = vp.closed;
   const useRes = vp.resolution;
-  const metric = 'arr';
+  const metric = metricSelect.value;
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
   const seriesKey = pacing + '_' + metric;
   const stagesForWon = STAGES.slice(0, -1);
@@ -1114,6 +1129,7 @@ document.getElementById('raw-stage-filter').addEventListener('change', renderTab
 fromSelect.addEventListener('change', updateToOptions);
 toSelect.addEventListener('change', updateChart);
 viewSelect.addEventListener('change', updateChart);
+metricSelect.addEventListener('change', updateChart);
 breakdownSelect.addEventListener('change', updateChart);
 
 var _gen = new Date(GENERATED_AT);
