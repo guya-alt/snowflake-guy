@@ -828,7 +828,8 @@ function updateChart() {{
     var mainSeries = dimData[groups[0]][seriesKey];
     if (mainSeries && mainSeries.length > 0 && mainSeries[0].bands) {{
       var bandColors = ['rgba(42,120,214,0.10)', 'rgba(237,161,0,0.14)', 'rgba(235,104,52,0.20)', 'rgba(211,59,59,0.28)'];
-      var bandLabels = ['0–30d', '30–60d', '60–90d', '90d+'];
+      var bandLabels = ['0–30 days', '30–60 days', '60–90 days', '90+ days'];
+      var bandHints = ['fresh — likely to convert', 'aging', 'getting stale', 'stale — unlikely to convert'];
       var prevY = mainSeries.map(function(d) {{ return d.rate || 0; }});
       for (var b = 0; b < 4; b++) {{
         var bandY = mainSeries.map(function(d, i) {{
@@ -837,15 +838,22 @@ function updateChart() {{
           var bandVal = d.bands[b];
           return base + (bandVal / d.denominator * 100);
         }});
+        var bHover = mainSeries.map(function(d, i) {{
+          if (!d.bands || d.denominator === 0) return '';
+          var bandVal = d.bands[b];
+          return '<b>' + bandLabels[b] + '</b>  ' + fmtK(bandVal) + ' ARR in stage (' + bandHints[b] + ')';
+        }});
         traces.push({{
           x: mainSeries.map(function(d) {{ return d.quarter; }}),
           y: bandY,
           type: 'scatter', mode: 'none',
           fill: 'tonexty',
           fillcolor: bandColors[b],
-          name: 'Potential (' + bandLabels[b] + ')',
-          showlegend: false,
-          hoverinfo: 'skip',
+          name: bandLabels[b],
+          legendgroup: 'potential',
+          showlegend: true,
+          hovertext: bHover,
+          hoverinfo: 'text',
         }});
         prevY = bandY;
       }}
