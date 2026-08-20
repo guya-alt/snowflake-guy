@@ -432,10 +432,10 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
   <div class="ctrl">
     <label>View <span class="info-i">i<span class="tip"><strong>Paced:</strong> every quarter measured at <em>day {pacing_days}</em>. Apples-to-apples.<br><br><strong>Full Quarter:</strong> final conversion rate, closed deals only.<br><br><strong>Pipeline:</strong> all deals including in-progress. Shows potential band &mdash; recent quarters may still grow.<br><br><strong>Resolution:</strong> converted / (converted + lost). Only deals with a known outcome. Ignores deals still in stage.</span></span></label>
     <select id="viewMode">
+      <option value="resolution">Resolution</option>
       <option value="paced">Paced (first {pacing_days} days)</option>
       <option value="full">Full Quarter</option>
       <option value="pipeline">Pipeline</option>
-      <option value="resolution">Resolution</option>
     </select>
   </div>
   <div class="ctrl">
