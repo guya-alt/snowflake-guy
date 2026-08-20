@@ -470,9 +470,8 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
   <h2>Deal-Level Data</h2>
   <div class="raw-bar">
     <input type="text" id="raw-filter" placeholder="Search deals, owners, teams...">
-    <select id="raw-team-filter"><option value="">Team</option></select>
-    <select id="raw-geo-filter"><option value="">Geo</option></select>
-    <select id="raw-source-filter"><option value="">Source</option></select>
+    <select id="raw-quarter-filter"><option value="">Quarter</option></select>
+    <select id="raw-stage-filter"><option value="">Stage</option></select>
     <select id="raw-conv-filter">
       <option value="all">All</option>
       <option value="yes">Converted</option>
@@ -996,7 +995,7 @@ function updateRawTable(from, to, pacing, closed) {{
   document.getElementById('raw-filter').value = '';
   document.getElementById('raw-conv-filter').value = 'all';
 
-  [['raw-team-filter','team','Team'],['raw-geo-filter','geo','Geo'],['raw-source-filter','mega_source','Source']].forEach(function(f) {{
+  [['raw-quarter-filter','quarter','Quarter'],['raw-stage-filter','current_stage','Stage']].forEach(function(f) {{
     var sel = document.getElementById(f[0]);
     var prev = sel.value;
     var vals = {{}};
@@ -1029,12 +1028,10 @@ function renderTable() {{
   if (cf === 'yes') records = records.filter(function(r) {{ return r.converted; }});
   if (cf === 'no') records = records.filter(function(r) {{ return !r.converted; }});
 
-  var tf = document.getElementById('raw-team-filter').value;
-  var gf = document.getElementById('raw-geo-filter').value;
-  var sf = document.getElementById('raw-source-filter').value;
-  if (tf) records = records.filter(function(r) {{ return r.team === tf; }});
-  if (gf) records = records.filter(function(r) {{ return r.geo === gf; }});
-  if (sf) records = records.filter(function(r) {{ return r.mega_source === sf; }});
+  var qf = document.getElementById('raw-quarter-filter').value;
+  var stf = document.getElementById('raw-stage-filter').value;
+  if (qf) records = records.filter(function(r) {{ return r.quarter === qf; }});
+  if (stf) records = records.filter(function(r) {{ return r.current_stage === stf; }});
 
   if (sortCol) {{
     records.sort(function(a, b) {{
@@ -1101,9 +1098,8 @@ function renderTable() {{
 
 document.getElementById('raw-filter').addEventListener('input', renderTable);
 document.getElementById('raw-conv-filter').addEventListener('change', renderTable);
-document.getElementById('raw-team-filter').addEventListener('change', renderTable);
-document.getElementById('raw-geo-filter').addEventListener('change', renderTable);
-document.getElementById('raw-source-filter').addEventListener('change', renderTable);
+document.getElementById('raw-quarter-filter').addEventListener('change', renderTable);
+document.getElementById('raw-stage-filter').addEventListener('change', renderTable);
 
 fromSelect.addEventListener('change', updateToOptions);
 toSelect.addEventListener('change', updateChart);
