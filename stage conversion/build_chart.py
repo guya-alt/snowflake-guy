@@ -74,7 +74,7 @@ def days_into_quarter(dt):
 
 def quarter_label(dt):
     q = (dt.month - 1) // 3 + 1
-    return f"Q{q} {dt.year}"
+    return f"{dt.year}-Q{q}"
 
 
 def prepare_entered(merged: pd.DataFrame, from_stage: str, to_stage: str):
@@ -890,6 +890,16 @@ function updateChart() {{
     xaxis: Object.assign({{}}, PLOTLY_LAYOUT.xaxis, {{ categoryorder: 'array', categoryarray: allQ }}),
   }}), PCFG);
   bindHighlight('chart');
+  var chartEl = document.getElementById('chart');
+  chartEl.removeAllListeners('plotly_click');
+  chartEl.on('plotly_click', function(data) {{
+    if (!data || !data.points || !data.points.length) return;
+    var q = data.points[0].x;
+    var sel = document.getElementById('raw-quarter-filter');
+    sel.value = sel.value === q ? '' : q;
+    renderTable();
+    document.getElementById('raw-table').scrollIntoView({{ behavior: 'smooth' }});
+  }});
   updateRawTable(from, to, pacing, closed);
   updateChart2();
 }}
