@@ -178,6 +178,28 @@ SELECT
         DATEDIFF('day', ld.FIRST_LICENCE_START, onb.ONBOARDING_COMPLETED_DATE), NULL) AS CORE_TTO_DAYS,
     COALESCE(exp.CW_EXPANSION_ARR, 0) AS CW_EXPANSION_ARR,
     IFF(exp.CW_EXPANSION_ARR IS NOT NULL, 1, 0) AS CW_EXPANSION_LOGOS,
+    -- Seat utilization threshold ramps with customer tenure (months since
+    -- first licence start, measured through end of last full quarter):
+    --   <= 6 months  -> 30%
+    --   <= 8 months  -> 80%
+    --   >  8 months  -> 100%
+    CASE
+        WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 6 THEN 30
+        WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 8 THEN 80
+        ELSE 100
+    END AS SEAT_UTIL_TARGET_PCT,
+    IFF(NULLIF(lic.TOTAL_LICENCES_BOUGHT, 0) IS NULL OR seats.TOTAL_UNIQUE_LOGINS IS NULL,
+        NULL,
+        ROUND(seats.TOTAL_UNIQUE_LOGINS * 100.0 / lic.TOTAL_LICENCES_BOUGHT, 1)) AS SEAT_UTIL_PCT,
+    IFF(NULLIF(lic.TOTAL_LICENCES_BOUGHT, 0) IS NULL OR seats.TOTAL_UNIQUE_LOGINS IS NULL,
+        0,
+        IFF(seats.TOTAL_UNIQUE_LOGINS * 100.0 / lic.TOTAL_LICENCES_BOUGHT >=
+            CASE
+                WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 6 THEN 30
+                WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 8 THEN 80
+                ELSE 100
+            END,
+            1, 0)) AS SEAT_UTIL_MEETS_TARGET,
     builds.TOTAL_BUILDING_SIGNALS,
     autos.TOTAL_AUTOMATION_RUNS,
     lic.TOTAL_LICENCES_BOUGHT,
