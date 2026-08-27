@@ -122,17 +122,94 @@ lic_dates AS (
     )
     GROUP BY SK_COMPANY
 ),
--- Won expansion deals per company, YTD through last full quarter
-expansions AS (
-    SELECT
-        SK_COMPANY,
-        SUM(DEAL_NET_NEW_ARR) AS CW_EXPANSION_ARR
-    FROM PORT_ANALYTICS_PROD.DWH.FACT_DEALS
-    WHERE DEAL_TYPE = 'Expansion'
-      AND IS_WON = TRUE
-      AND DEAL_CLOSED_DATE >= DATE_TRUNC('YEAR', CURRENT_DATE)
-      AND DEAL_CLOSED_DATE <  DATE_TRUNC('QUARTER', CURRENT_DATE)
-    GROUP BY SK_COMPANY
+-- Action momentum: per-company monthly self-service action runs (commercial
+-- accounts, non-deleted actions), from MAX(first licence start, Jan 1) through
+-- end of last full quarter. Partial start months are normalized to a full-month
+-- equivalent so a mid-month start doesn't look artificially small.
+-- ACTIONS_MOM_PCT = share of month-to-month transitions where runs did not
+-- decrease (non-strict). Behavior:
+--   * NULL if the customer's measurement window spans < 2 months (not aged).
+--   * 0    if the window spans >= 2 months but the customer had zero
+--          self-service action runs across the entire window (aged, no signal).
+--   * else share of transitions where runs_m >= runs_{m-1}.
+actions_mom AS (
+    WITH month_spine AS (
+        SELECT DATEADD('month', -SEQ4(),
+                       DATE_TRUNC('MONTH',
+                           (DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY')::DATE))::DATE AS MONTH
+        FROM TABLE(GENERATOR(ROWCOUNT => 12))
+    ),
+    company_bounds AS (
+        SELECT c.SK_COMPANY,
+               GREATEST(l.FIRST_LICENCE_START, DATE_TRUNC('YEAR', CURRENT_DATE)::DATE) AS START_DATE,
+               (DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY')::DATE          AS END_DATE
+        FROM jan1_snapshot c
+        JOIN lic_dates l ON l.SK_COMPANY = c.SK_COMPANY
+        WHERE l.FIRST_LICENCE_START IS NOT NULL
+    ),
+    company_months AS (
+        SELECT b.SK_COMPANY, m.MONTH, b.START_DATE, b.END_DATE
+        FROM company_bounds b
+        JOIN month_spine   m
+          ON m.MONTH >= DATE_TRUNC('MONTH', b.START_DATE)
+         AND m.MONTH <= DATE_TRUNC('MONTH', b.END_DATE)
+    ),
+    monthly_runs AS (
+        SELECT
+            dac.SK_COMPANY,
+            DATE_TRUNC('MONTH', far._FACT_DATE)::DATE AS MONTH,
+            SUM(far.COUNT_SUCCEEDED) AS RUNS
+        FROM PORT_ANALYTICS_PROD.DWH.FACT_ACTION_RUNS far
+        JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACTION  da  ON far.SK_ACTION = da.SK_ACTION
+        JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG     o   ON far.SK_ORG    = o.SK_ORG
+        JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT dac ON o.SK_ACCOUNT  = dac.SK_ACCOUNT
+        WHERE da.TRIGGER_TYPE = 'self-service'
+          AND da._IS_DELETED  = FALSE
+          AND dac.IS_COMMERCIAL_ACCOUNT = TRUE
+          AND far._FACT_DATE >= DATE_TRUNC('YEAR', CURRENT_DATE)
+          AND far._FACT_DATE <  DATE_TRUNC('QUARTER', CURRENT_DATE)
+        GROUP BY 1, 2
+    ),
+    normalized AS (
+        SELECT
+            cm.SK_COMPANY, cm.MONTH,
+            DATEDIFF('day', GREATEST(cm.MONTH, cm.START_DATE),
+                            LEAST(LAST_DAY(cm.MONTH), cm.END_DATE)) + 1 AS DAYS_ACTIVE,
+            DATEDIFF('day', cm.MONTH, LAST_DAY(cm.MONTH)) + 1            AS DAYS_IN_MONTH,
+            COALESCE(mr.RUNS, 0)                                         AS RUNS
+        FROM company_months cm
+        LEFT JOIN monthly_runs mr
+          ON mr.SK_COMPANY = cm.SK_COMPANY AND mr.MONTH = cm.MONTH
+    ),
+    normalized2 AS (
+        SELECT SK_COMPANY, MONTH, RUNS,
+               CASE WHEN DAYS_ACTIVE < DAYS_IN_MONTH AND DAYS_ACTIVE > 0
+                    THEN RUNS * DAYS_IN_MONTH / DAYS_ACTIVE
+                    ELSE RUNS END AS RUNS_NORMALIZED
+        FROM normalized
+    ),
+    transitions AS (
+        SELECT SK_COMPANY, MONTH, RUNS, RUNS_NORMALIZED,
+               LAG(RUNS_NORMALIZED) OVER (PARTITION BY SK_COMPANY ORDER BY MONTH) AS PREV_RUNS
+        FROM normalized2
+    ),
+    agg AS (
+        SELECT SK_COMPANY,
+               COUNT(PREV_RUNS)                                                 AS ACTIONS_MONTHS_MEASURED,
+               SUM(IFF(RUNS_NORMALIZED >= PREV_RUNS, 1, 0))                     AS ACTIONS_MONTHS_INCREASED,
+               SUM(RUNS)                                                        AS TOTAL_RUNS
+        FROM transitions
+        GROUP BY SK_COMPANY
+    )
+    SELECT SK_COMPANY,
+           ACTIONS_MONTHS_MEASURED,
+           ACTIONS_MONTHS_INCREASED,
+           CASE
+               WHEN ACTIONS_MONTHS_MEASURED = 0 THEN NULL
+               WHEN TOTAL_RUNS = 0             THEN 0
+               ELSE ROUND(ACTIONS_MONTHS_INCREASED * 100.0 / ACTIONS_MONTHS_MEASURED, 1)
+           END AS ACTIONS_MOM_PCT
+    FROM agg
 )
 SELECT
     am_e.DISPLAY_NAME AS AM_OWNER,
@@ -176,8 +253,6 @@ SELECT
     IFF(dc.CUSTOMER_INTERNAL_TIER = 'Core'
         AND onb.ONBOARDING_COMPLETED_DATE >= ld.FIRST_LICENCE_START,
         DATEDIFF('day', ld.FIRST_LICENCE_START, onb.ONBOARDING_COMPLETED_DATE), NULL) AS CORE_TTO_DAYS,
-    COALESCE(exp.CW_EXPANSION_ARR, 0) AS CW_EXPANSION_ARR,
-    IFF(exp.CW_EXPANSION_ARR IS NOT NULL, 1, 0) AS CW_EXPANSION_LOGOS,
     -- Seat utilization threshold ramps with customer tenure (months since
     -- first licence start, measured through end of last full quarter):
     --   <= 6 months  -> 30%
@@ -193,15 +268,18 @@ SELECT
         ROUND(seats.TOTAL_UNIQUE_LOGINS * 100.0 / lic.TOTAL_LICENCES_BOUGHT, 1)) AS SEAT_UTIL_PCT,
     IFF(NULLIF(lic.TOTAL_LICENCES_BOUGHT, 0) IS NULL OR seats.TOTAL_UNIQUE_LOGINS IS NULL,
         0,
-        IFF(seats.TOTAL_UNIQUE_LOGINS * 100.0 / lic.TOTAL_LICENCES_BOUGHT >=
-            CASE
-                WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 6 THEN 30
-                WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 8 THEN 80
-                ELSE 100
-            END,
+        IFF(COALESCE(lic.LICENCE_IS_UNLIMITED, FALSE)
+            OR seats.TOTAL_UNIQUE_LOGINS * 100.0 / lic.TOTAL_LICENCES_BOUGHT >=
+                CASE
+                    WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 6 THEN 30
+                    WHEN DATEDIFF('month', ld.FIRST_LICENCE_START, DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY') <= 8 THEN 80
+                    ELSE 100
+                END,
             1, 0)) AS SEAT_UTIL_MEETS_TARGET,
     builds.TOTAL_BUILDING_SIGNALS,
-    autos.TOTAL_AUTOMATION_RUNS,
+    am_mom.ACTIONS_MOM_PCT,
+    am_mom.ACTIONS_MONTHS_MEASURED,
+    am_mom.ACTIONS_MONTHS_INCREASED,
     lic.TOTAL_LICENCES_BOUGHT,
     seats.TOTAL_UNIQUE_LOGINS,
     COALESCE(g_cs.CALLS, 0) AS CS_GONG_CALLS,
@@ -239,7 +317,6 @@ LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE am_jan1_e
     ON c.SK_ACCOUNT_OWNER = am_jan1_e.SK_EMPLOYEE
 LEFT JOIN owner_tenure ot ON ot.SK_COMPANY = c.SK_COMPANY
 LEFT JOIN lic_dates ld ON ld.SK_COMPANY = c.SK_COMPANY
-LEFT JOIN expansions exp ON exp.SK_COMPANY = c.SK_COMPANY
 LEFT JOIN gong g_cs
     ON g_cs.SK_COMPANY = c.SK_COMPANY AND g_cs.SK_EMPLOYEE = dc.SK_CSM_OWNER
 LEFT JOIN gong g_am
@@ -263,32 +340,21 @@ LEFT JOIN (
       AND fbs._FACT_DATE <  DATE_TRUNC('QUARTER', CURRENT_DATE)
     GROUP BY da.SK_COMPANY
 ) builds ON builds.SK_COMPANY = c.SK_COMPANY
--- Automation runs (trigger_type='automation', commercial accounts, succeeded only)
+LEFT JOIN actions_mom am_mom ON am_mom.SK_COMPANY = c.SK_COMPANY
+-- Unique logins (commercial accounts only)
+-- rows overlapping the current-year window. Using MAX (not the latest row's
+-- value) means the utilization denominator reflects the highest seat count
+-- the customer had access to during the period, so mid-year upsells/downsells
+-- are handled sensibly. IS_UNLIMITED short-circuits seat-util to "meets".
 LEFT JOIN (
-    SELECT da.SK_COMPANY, SUM(far.COUNT_SUCCEEDED) AS TOTAL_AUTOMATION_RUNS
-    FROM PORT_ANALYTICS_PROD.DWH.FACT_ACTION_RUNS far
-    JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACTION act ON far.SK_ACTION = act.SK_ACTION
-    JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG o ON far.SK_ORG = o.SK_ORG
-    JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da ON o.SK_ACCOUNT = da.SK_ACCOUNT
-    WHERE da.IS_COMMERCIAL_ACCOUNT = TRUE
-      AND act.TRIGGER_TYPE = 'automation'
-      AND far._FACT_DATE >= DATE_TRUNC('YEAR', CURRENT_DATE)
-      AND far._FACT_DATE <  DATE_TRUNC('QUARTER', CURRENT_DATE)
-    GROUP BY da.SK_COMPANY
-) autos ON autos.SK_COMPANY = c.SK_COMPANY
--- Licences bought: TOTAL_LICENSED_USERS from the latest non-Churn subscription
--- (Churn rows carry negative values, so SUM produces wrong counts)
-LEFT JOIN (
-    SELECT SK_COMPANY, TOTAL_LICENSED_USERS AS TOTAL_LICENCES_BOUGHT
-    FROM (
-        SELECT SK_COMPANY, TOTAL_LICENSED_USERS,
-               ROW_NUMBER() OVER (PARTITION BY SK_COMPANY ORDER BY START_DATE DESC) AS rn
-        FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
-        WHERE TYPE != 'Churn'
-          AND START_DATE < DATE_TRUNC('QUARTER', CURRENT_DATE)
-          AND (END_DATE >= DATE_TRUNC('YEAR', CURRENT_DATE) OR END_DATE IS NULL)
-    )
-    WHERE rn = 1
+    SELECT SK_COMPANY,
+           MAX(TOTAL_LICENSED_USERS) AS TOTAL_LICENCES_BOUGHT,
+           BOOLOR_AGG(COALESCE(IS_UNLIMITED, FALSE)) AS LICENCE_IS_UNLIMITED
+    FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
+    WHERE TYPE != 'Churn'
+      AND START_DATE < DATE_TRUNC('QUARTER', CURRENT_DATE)
+      AND (END_DATE >= DATE_TRUNC('YEAR', CURRENT_DATE) OR END_DATE IS NULL)
+    GROUP BY SK_COMPANY
 ) lic ON lic.SK_COMPANY = c.SK_COMPANY
 -- Unique logins (commercial accounts only)
 LEFT JOIN (
@@ -304,12 +370,16 @@ LEFT JOIN (
 ORDER BY c.ARR DESC NULLS LAST;
 
 
--- CW Expansions per deal at company level (close date between start of year and end of last full quarter)
+-- CW Expansions / Renewals per deal at company level (close date between start
+-- of year and end of last full quarter). Includes both Expansion and
+-- existingbusiness (renewal) deals with non-zero net new ARR; excludes
+-- newbusiness.
 -- CS_OWNER and AM_OWNER are the owners in effect at the deal close date (from SCD history)
 SELECT
     dc.COMPANY_CRM_ID,
     dc.COMPANY_NAME,
     dc.CUSTOMER_INTERNAL_TIER AS TIER,
+    d.DEAL_TYPE,
     cs_e.DISPLAY_NAME AS CS_OWNER,
     am_e.DISPLAY_NAME AS AM_OWNER,
     d.DEAL_CLOSED_DATE,
@@ -328,8 +398,9 @@ LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE cs_e
     ON s.SK_CSM_OWNER = cs_e.SK_EMPLOYEE
 LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE am_e
     ON s.SK_ACCOUNT_OWNER = am_e.SK_EMPLOYEE
-WHERE d.DEAL_TYPE = 'Expansion'
+WHERE d.DEAL_TYPE IN ('Expansion', 'existingbusiness')
   AND d.IS_WON = TRUE
+  AND d.DEAL_NET_NEW_ARR IS NOT NULL AND d.DEAL_NET_NEW_ARR != 0
   AND d.DEAL_CLOSED_DATE >= DATE_TRUNC('YEAR', CURRENT_DATE)
   AND d.DEAL_CLOSED_DATE < DATE_TRUNC('QUARTER', CURRENT_DATE)
 ORDER BY NET_NEW_ARR DESC;
