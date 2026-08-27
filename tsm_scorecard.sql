@@ -367,6 +367,10 @@ LEFT JOIN (
       AND fl.LOGIN_DATE <  DATE_TRUNC('QUARTER', CURRENT_DATE)
     GROUP BY da.SK_COMPANY
 ) seats ON seats.SK_COMPANY = c.SK_COMPANY
+-- Exclude customers whose first licence starts AFTER end of last full quarter
+-- (not yet materially a customer within the measurement window)
+WHERE ld.FIRST_LICENCE_START IS NULL
+   OR ld.FIRST_LICENCE_START <= DATE_TRUNC('QUARTER', CURRENT_DATE) - INTERVAL '1 DAY'
 ORDER BY c.ARR DESC NULLS LAST;
 
 
