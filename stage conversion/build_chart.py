@@ -182,7 +182,7 @@ def compute_all(merged: pd.DataFrame):
     pacing_days = days_into_quarter(now) - 1
     current_q_label = quarter_label(now)
 
-    merged["team"] = merged["team"].fillna("Unknown")
+    merged = merged[merged["team"].notna() & ~merged["team"].str.contains("SDR", case=False, na=False)].copy()
     merged["geo"] = merged["geo"].fillna("Unknown")
     merged["mega_source"] = merged["mega_source"].fillna("Unknown")
 
