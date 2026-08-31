@@ -260,6 +260,10 @@ def compute_raw_data(merged: pd.DataFrame):
     now = datetime.now(timezone.utc)
     pacing_days = days_into_quarter(now) - 1
 
+    merged = merged[merged["team"].notna() & ~merged["team"].str.contains("SDR", case=False, na=False)].copy()
+    merged["geo"] = merged["geo"].fillna("Unknown")
+    merged["mega_source"] = merged["mega_source"].fillna("Unknown")
+
     stages = CHART_STAGES
     raw_data = {}
 
@@ -590,9 +594,7 @@ function sortedQuarters(traces) {{
   var seen = {{}};
   traces.forEach(function(t) {{ t.x.forEach(function(q) {{ seen[q] = 1; }}); }});
   return Object.keys(seen).sort(function(a, b) {{
-    var pa = a.match(/Q(\\d)\\s+(\\d{{4}})/), pb = b.match(/Q(\\d)\\s+(\\d{{4}})/);
-    if (!pa || !pb) return a < b ? -1 : 1;
-    return (+pa[2] * 10 + +pa[1]) - (+pb[2] * 10 + +pb[1]);
+    return a < b ? -1 : a > b ? 1 : 0;
   }});
 }}
 
@@ -871,9 +873,7 @@ function updateChart() {{
     if (s) s.forEach(function(d) {{ allQSet[d.quarter] = 1; }});
   }});
   var allQList = Object.keys(allQSet).sort(function(a, b) {{
-    var pa = a.match(/Q(\\d)\\s+(\\d{{4}})/), pb = b.match(/Q(\\d)\\s+(\\d{{4}})/);
-    if (!pa || !pb) return a < b ? -1 : 1;
-    return (+pa[2] * 10 + +pa[1]) - (+pb[2] * 10 + +pb[1]);
+    return a < b ? -1 : a > b ? 1 : 0;
   }});
 
   groups.forEach(function(groupName, idx) {{
@@ -1010,14 +1010,17 @@ function updateChart2() {{
   const traces2 = [];
 
   var sub2;
-  if (pacing === 'paced') {{
-    sub2 = 'How much ARR from each stage closed won within ' + PACING_DAYS + ' days?';
+  var what2 = metric === 'arr' ? 'ARR' : 'deals';
+  if (useClosedDate) {{
+    sub2 = 'Of ' + what2 + ' that closed each quarter, what % converted from each stage to Closed Won?';
+  }} else if (pacing === 'paced') {{
+    sub2 = 'How much ' + what2 + ' from each stage closed won within ' + PACING_DAYS + ' days?';
   }} else if (useRes) {{
-    sub2 = 'When ARR at each stage reaches an outcome, how often does it close won?';
+    sub2 = 'When ' + what2 + ' at each stage reaches an outcome, how often does it close won?';
   }} else if (closed === 'all') {{
-    sub2 = 'How much ARR from each stage closed won? Recent quarters may still grow.';
+    sub2 = 'How much ' + what2 + ' from each stage closed won? Recent quarters may still grow.';
   }} else {{
-    sub2 = 'How much ARR from each stage closed won?';
+    sub2 = 'How much ' + what2 + ' from each stage closed won?';
   }}
   document.getElementById('chart2-sub').textContent = sub2;
 
