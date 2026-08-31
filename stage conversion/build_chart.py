@@ -176,6 +176,46 @@ def compute_series(subset: pd.DataFrame, pacing_days: int):
     return {"full_deals": full_deals, "full_arr": full_arr, "paced_deals": paced_deals, "paced_arr": paced_arr}
 
 
+def compute_series_by_close_date(subset: pd.DataFrame):
+    """Compute conversion grouped by the deal's close quarter."""
+    closed = subset[subset["stage"].isin(["Closed Won", "Closed Lost"])].copy()
+    if closed.empty:
+        return {"closed_date_deals": [], "closed_date_arr": []}
+
+    closed["close_dt"] = closed[["Closed Won", "Closed Lost"]].max(axis=1)
+    closed["close_q_start"] = closed["close_dt"].apply(quarter_start)
+    closed["close_q_label"] = closed["close_dt"].apply(quarter_label)
+
+    all_quarters = sorted(closed["close_q_start"].unique())
+    cd_deals, cd_arr = [], []
+
+    for q_start in all_quarters:
+        q_label = quarter_label(q_start.to_pydatetime() if hasattr(q_start, 'to_pydatetime') else q_start)
+        q_deals = closed[closed["close_q_start"] == q_start]
+
+        dc = len(q_deals)
+        da = q_deals["amount"].sum()
+        nc = int(q_deals["converted"].sum())
+        na = q_deals.loc[q_deals["converted"], "amount"].sum()
+        lc = dc - nc
+        la = da - na
+
+        cd_deals.append({
+            "quarter": q_label, "rate": (nc / dc * 100) if dc > 0 else None,
+            "numerator": nc, "denominator": dc,
+            "resolution_rate": (nc / dc * 100) if dc > 0 else None,
+            "lost": lc, "in_play": 0,
+        })
+        cd_arr.append({
+            "quarter": q_label, "rate": (na / da * 100) if da > 0 else None,
+            "numerator": float(na), "denominator": float(da),
+            "resolution_rate": (na / da * 100) if da > 0 else None,
+            "lost": float(la), "in_play": 0,
+        })
+
+    return {"closed_date_deals": cd_deals, "closed_date_arr": cd_arr}
+
+
 def compute_all(merged: pd.DataFrame):
     """Compute conversions for overall + each breakdown dimension."""
     now = datetime.now(timezone.utc)
@@ -200,14 +240,18 @@ def compute_all(merged: pd.DataFrame):
             results[key] = {}
 
             # Overall
-            results[key]["none"] = {"All": compute_series(entered, pacing_days)}
+            base = compute_series(entered, pacing_days)
+            base.update(compute_series_by_close_date(entered))
+            results[key]["none"] = {"All": base}
 
             # Breakdowns
             for dim in ["team", "geo", "mega_source"]:
                 results[key][dim] = {}
                 for val, group in entered.groupby(dim):
                     if len(group) >= 3:  # skip tiny groups
-                        results[key][dim][str(val)] = compute_series(group, pacing_days)
+                        grp = compute_series(group, pacing_days)
+                        grp.update(compute_series_by_close_date(group))
+                        results[key][dim][str(val)] = grp
 
     return results, current_q_label, pacing_days
 
@@ -229,6 +273,10 @@ def compute_raw_data(merged: pd.DataFrame):
             for _, row in entered.iterrows():
                 from_dt = row[from_stage]
                 to_dt = row[to_stage] if row["converted"] else None
+                cw = row.get("Closed Won")
+                cl = row.get("Closed Lost")
+                close_dt = max(filter(lambda x: pd.notna(x), [cw, cl]), default=None)
+                close_q = quarter_label(close_dt) if close_dt is not None and pd.notna(close_dt) else None
                 records.append({
                     "deal_id": row["deal_id"],
                     "deal_name": row.get("deal_name", "") or "",
@@ -240,6 +288,7 @@ def compute_raw_data(merged: pd.DataFrame):
                     "current_stage": row.get("stage", "") or "",
                     "amount": row["amount"] if pd.notna(row["amount"]) else 0,
                     "quarter": row["from_q_label"],
+                    "close_quarter": close_q,
                     "from_date": from_dt.strftime("%Y-%m-%d") if pd.notna(from_dt) else None,
                     "to_date": to_dt.strftime("%Y-%m-%d") if pd.notna(to_dt) else None,
                     "converted": bool(row["converted"]),
@@ -430,9 +479,10 @@ def build_html(data_closed: dict, data_all: dict, current_q_label: str, pacing_d
     <select id="toStage"></select>
   </div>
   <div class="ctrl">
-    <label>View <span class="info-i">i<span class="tip"><strong>Paced:</strong> every quarter measured at <em>day {pacing_days}</em>. Apples-to-apples.<br><br><strong>Full Quarter:</strong> final conversion rate, closed deals only.<br><br><strong>Pipeline:</strong> all deals including in-progress. Shows potential band &mdash; recent quarters may still grow.<br><br><strong>Resolution:</strong> converted / (converted + lost). Only deals with a known outcome. Ignores deals still in stage.</span></span></label>
+    <label>View <span class="info-i">i<span class="tip"><strong>Paced:</strong> every quarter measured at <em>day {pacing_days}</em>. Apples-to-apples.<br><br><strong>Full Quarter:</strong> final conversion rate, closed deals only.<br><br><strong>Pipeline:</strong> all deals including in-progress. Shows potential band &mdash; recent quarters may still grow.<br><br><strong>Resolution:</strong> converted / (converted + lost). Only deals with a known outcome. Ignores deals still in stage.<br><br><strong>Closed Date:</strong> groups deals by their close quarter instead of entry quarter. Shows conversion rate of deals that closed in each period.</span></span></label>
     <select id="viewMode">
       <option value="resolution">Resolution</option>
+      <option value="closed_date">Closed Date</option>
       <option value="paced">Paced (first {pacing_days} days)</option>
       <option value="full">Full Quarter</option>
       <option value="pipeline">Pipeline</option>
@@ -656,51 +706,76 @@ function aggregateRaw(records, pacing, breakdown) {{
   var result = {{}};
   Object.keys(byGroup).forEach(function(g) {{
     var qData = byGroup[g];
-    var full_arr = [], paced_arr = [];
+    var full_arr = [], full_deals = [], paced_arr = [], paced_deals = [];
     Object.keys(qData).sort().forEach(function(q) {{
       var deals = qData[q];
-      var da = 0, na = 0, la = 0, ipa = 0;
+      var dc = deals.length, nc = 0, da = 0, na = 0, la = 0, ipa = 0, lc = 0, ipc = 0;
       deals.forEach(function(d) {{
         da += d.amount || 0;
-        if (d.converted) na += d.amount || 0;
-        else if (d.current_stage === 'Closed Lost') la += d.amount || 0;
-        else if (d.current_stage !== 'Closed Won') ipa += d.amount || 0;
+        if (d.converted) {{ nc++; na += d.amount || 0; }}
+        else if (d.current_stage === 'Closed Lost') {{ lc++; la += d.amount || 0; }}
+        else if (d.current_stage !== 'Closed Won') {{ ipc++; ipa += d.amount || 0; }}
       }});
       var res_da = na + la;
+      var res_dc = nc + lc;
       full_arr.push({{
-        quarter: q,
-        rate: da > 0 ? na / da * 100 : null,
+        quarter: q, rate: da > 0 ? na / da * 100 : null,
         numerator: na, denominator: da,
         ceiling: da > 0 ? (na + ipa) / da * 100 : null,
         lost: la, in_play: ipa,
         resolution_rate: res_da > 0 ? na / res_da * 100 : null,
       }});
+      full_deals.push({{
+        quarter: q, rate: dc > 0 ? nc / dc * 100 : null,
+        numerator: nc, denominator: dc,
+        ceiling: dc > 0 ? (nc + ipc) / dc * 100 : null,
+        lost: lc, in_play: ipc,
+        resolution_rate: res_dc > 0 ? nc / res_dc * 100 : null,
+      }});
 
       if (pacing === 'paced') {{
         var pq = deals.filter(function(d) {{ return d.days_in_q <= PACING_DAYS; }});
-        var pda = 0, pna = 0;
+        var pdc = pq.length, pnc = 0, pda = 0, pna = 0;
         pq.forEach(function(d) {{
           pda += d.amount || 0;
-          if (d.converted && d.to_days_from_q_start !== null && d.to_days_from_q_start < PACING_DAYS + 1) pna += d.amount || 0;
+          if (d.converted && d.to_days_from_q_start !== null && d.to_days_from_q_start < PACING_DAYS + 1) {{ pnc++; pna += d.amount || 0; }}
         }});
-        paced_arr.push({{
-          quarter: q,
-          rate: pda > 0 ? pna / pda * 100 : null,
-          numerator: pna, denominator: pda,
-        }});
+        paced_arr.push({{ quarter: q, rate: pda > 0 ? pna / pda * 100 : null, numerator: pna, denominator: pda }});
+        paced_deals.push({{ quarter: q, rate: pdc > 0 ? pnc / pdc * 100 : null, numerator: pnc, denominator: pdc }});
       }}
     }});
-    result[g] = {{ full_arr: full_arr, paced_arr: paced_arr }};
+
+    var closed_date_arr = [], closed_date_deals = [];
+    var byCloseQ = {{}};
+    records.forEach(function(r) {{
+      var g2 = breakdown === 'none' ? 'All' : (r[breakdown] || 'Unknown');
+      if (g2 !== g || !r.close_quarter) return;
+      if (!byCloseQ[r.close_quarter]) byCloseQ[r.close_quarter] = [];
+      byCloseQ[r.close_quarter].push(r);
+    }});
+    Object.keys(byCloseQ).sort().forEach(function(q) {{
+      var deals = byCloseQ[q];
+      var dc = deals.length, nc = 0, da = 0, na = 0;
+      deals.forEach(function(d) {{
+        da += d.amount || 0;
+        if (d.converted) {{ nc++; na += d.amount || 0; }}
+      }});
+      closed_date_arr.push({{ quarter: q, rate: da > 0 ? na / da * 100 : null, numerator: na, denominator: da, resolution_rate: da > 0 ? na / da * 100 : null, lost: da - na, in_play: 0 }});
+      closed_date_deals.push({{ quarter: q, rate: dc > 0 ? nc / dc * 100 : null, numerator: nc, denominator: dc, resolution_rate: dc > 0 ? nc / dc * 100 : null, lost: dc - nc, in_play: 0 }});
+    }});
+
+    result[g] = {{ full_arr: full_arr, full_deals: full_deals, paced_arr: paced_arr, paced_deals: paced_deals, closed_date_arr: closed_date_arr, closed_date_deals: closed_date_deals }};
   }});
   return result;
 }}
 
 function viewParams() {{
   var v = viewSelect.value;
-  if (v === 'paced') return {{ pacing: 'paced', closed: 'closed', resolution: false }};
-  if (v === 'full') return {{ pacing: 'full', closed: 'closed', resolution: false }};
-  if (v === 'pipeline') return {{ pacing: 'full', closed: 'all', resolution: false }};
-  return {{ pacing: 'full', closed: 'all', resolution: true }};
+  if (v === 'paced') return {{ pacing: 'paced', closed: 'closed', resolution: false, closedDate: false }};
+  if (v === 'full') return {{ pacing: 'full', closed: 'closed', resolution: false, closedDate: false }};
+  if (v === 'pipeline') return {{ pacing: 'full', closed: 'all', resolution: false, closedDate: false }};
+  if (v === 'closed_date') return {{ pacing: 'full', closed: 'all', resolution: false, closedDate: true }};
+  return {{ pacing: 'full', closed: 'all', resolution: true, closedDate: false }};
 }}
 
 STAGES.slice(0, -1).forEach(function(s, i) {{
@@ -729,18 +804,21 @@ function updateChart() {{
   const pacing = vp.pacing;
   const closed = vp.closed;
   const useResolution = vp.resolution;
+  const useClosedDate = vp.closedDate;
   const breakdown = breakdownSelect.value;
   const metric = metricSelect.value;
 
   const key = from + '|' + to;
-  const seriesKey = pacing + '_' + metric;
+  const seriesKey = useClosedDate ? 'closed_date_' + metric : pacing + '_' + metric;
 
   const metricLabel = metric === 'arr' ? 'ARR' : 'Deal Count';
   const brkLabel = breakdown === 'none' ? '' : ' by ' + {{team:'Team',geo:'Geo',mega_source:'Mega Source'}}[breakdown];
   document.getElementById('chart-title').textContent = from + ' → ' + to + brkLabel;
   var sub;
   var what = metric === 'arr' ? 'ARR' : 'deals';
-  if (pacing === 'paced') {{
+  if (useClosedDate) {{
+    sub = 'Of ' + what + ' that closed each quarter, what % converted from ' + from + ' to ' + to + '?';
+  }} else if (pacing === 'paced') {{
     sub = 'How much ' + what + ' moved from ' + from + ' to ' + to + ' within ' + PACING_DAYS + ' days?';
   }} else if (useResolution) {{
     sub = 'When ' + what + ' at ' + from + ' reaches an outcome, how often does it reach ' + to + '?';
@@ -760,7 +838,7 @@ function updateChart() {{
     var agg = aggregateRaw(rawRecs, pacing, breakdown);
     dimData = {{}};
     Object.keys(agg).forEach(function(g) {{
-      dimData[g] = {{ full_arr: agg[g].full_arr, paced_arr: agg[g].paced_arr }};
+      dimData[g] = agg[g];
     }});
   }} else {{
     var DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
@@ -924,9 +1002,10 @@ function updateChart2() {{
   const pacing = vp.pacing;
   const closed = vp.closed;
   const useRes = vp.resolution;
+  const useClosedDate = vp.closedDate;
   const metric = metricSelect.value;
   const DATA = closed === 'closed' ? DATA_CLOSED : DATA_ALL;
-  const seriesKey = pacing + '_' + metric;
+  const seriesKey = useClosedDate ? 'closed_date_' + metric : pacing + '_' + metric;
   const stagesForWon = STAGES.slice(0, -1);
   const traces2 = [];
 
