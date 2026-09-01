@@ -1,0 +1,315 @@
+
+-- Find company-level CS owner assignments for each TSM
+-- Shows when each TSM was first assigned to each company (customers only)
+-- Uses SCD table with LAG to detect when SK_CSM_OWNER changed
+WITH params AS (
+    SELECT CURRENT_TIMESTAMP() AS relevant_date
+),
+current_cs_owners AS (
+    -- CS owners currently assigned to at least one active customer
+    SELECT DISTINCT SK_CSM_OWNER
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
+    WHERE LIFECYCLE_STAGE = 'Customer'
+      AND SK_CSM_OWNER IS NOT NULL
+),
+cs_owners_for_customers AS (
+    -- Get all CS owners who ever owned a customer company (current or historical)
+    SELECT DISTINCT scd.SK_CSM_OWNER
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD scd
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp ON comp.SK_COMPANY = scd.SK_COMPANY
+    WHERE comp.LIFECYCLE_STAGE = 'Customer'
+      AND scd.SK_CSM_OWNER IS NOT NULL
+),
+tsm_employees AS (
+    SELECT 
+        e.SK_EMPLOYEE,
+        e.EMPLOYEE_ID,
+        e.EMAIL,
+        e.DISPLAY_NAME,
+        e.TITLE,
+        e.ORIGINAL_START_DATE AS HIRE_DATE
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE e
+    JOIN current_cs_owners cs ON cs.SK_CSM_OWNER = e.SK_EMPLOYEE
+    WHERE (e.TITLE ILIKE '%TSM%'
+       OR e.TITLE ILIKE '%Technical Success Manager%'
+       OR e.TITLE ILIKE '%Solution Architect%')
+      AND e.ORIGINAL_START_DATE <= (SELECT relevant_date FROM params)
+),
+company_csm_changes AS (
+    SELECT 
+        scd.SK_COMPANY,
+        scd.COMPANY_CRM_ID,
+        scd.COMPANY_NAME,
+        scd.SK_CSM_OWNER,
+        scd.EFFECTIVE_START_DATE,
+        scd.EFFECTIVE_END_DATE,
+        scd.IS_LATEST_VERSION,
+        LAG(scd.SK_CSM_OWNER) OVER (
+            PARTITION BY scd.SK_COMPANY 
+            ORDER BY scd.EFFECTIVE_START_DATE
+        ) AS PREV_CSM_OWNER
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD scd
+    INNER JOIN cs_owners_for_customers c ON scd.SK_CSM_OWNER = c.SK_CSM_OWNER
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp 
+        ON comp.SK_COMPANY = scd.SK_COMPANY
+        AND comp.LIFECYCLE_STAGE IN ('Customer', 'Churn')
+    WHERE scd.SK_CSM_OWNER IS NOT NULL
+),
+first_assignment AS (
+    SELECT 
+        c.SK_CSM_OWNER,
+        c.SK_COMPANY,
+        c.COMPANY_CRM_ID,
+        c.COMPANY_NAME,
+        c.EFFECTIVE_START_DATE AS ASSIGNED_DATE,
+        t.HIRE_DATE,
+        ROW_NUMBER() OVER (
+            PARTITION BY c.SK_CSM_OWNER, c.SK_COMPANY 
+            ORDER BY c.EFFECTIVE_START_DATE
+        ) AS assignment_rank
+    FROM company_csm_changes c
+    INNER JOIN tsm_employees t ON c.SK_CSM_OWNER = t.SK_EMPLOYEE
+    WHERE (
+        -- Historical assignments: must have started before relevant date
+        (c.SK_CSM_OWNER != COALESCE(c.PREV_CSM_OWNER, '') OR c.PREV_CSM_OWNER IS NULL)
+        AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
+        AND c.EFFECTIVE_START_DATE <= (SELECT relevant_date FROM params)
+        AND DATEDIFF('day', c.EFFECTIVE_START_DATE, COALESCE(c.EFFECTIVE_END_DATE, CURRENT_TIMESTAMP)) >= 1
+    ) OR (
+        -- Current active assignments: always include regardless of start date
+        c.IS_LATEST_VERSION = TRUE
+        AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
+        AND DATEDIFF('day', c.EFFECTIVE_START_DATE, COALESCE(c.EFFECTIVE_END_DATE, CURRENT_TIMESTAMP)) >= 1
+    )
+),
+assignment_end_dates AS (
+    SELECT 
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        MIN(c2.EFFECTIVE_START_DATE) AS LEFT_DATE
+    FROM first_assignment f
+    INNER JOIN company_csm_changes c2 
+        ON f.SK_COMPANY = c2.SK_COMPANY 
+        AND c2.EFFECTIVE_START_DATE > f.ASSIGNED_DATE
+        AND c2.SK_CSM_OWNER != f.SK_CSM_OWNER
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
+arr_metrics AS (
+    SELECT 
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        LEAST(
+            COALESCE(e.LEFT_DATE, (SELECT relevant_date FROM params)),
+            (SELECT relevant_date FROM params)
+        ) AS LEFT_DATE,
+        COALESCE(arr_start.ARR, 0) AS ARR_AT_ASSIGNMENT,
+        -- If company has churned, ARR at end is 0 regardless of SCD value
+        CASE 
+            WHEN comp.LIFECYCLE_STAGE = 'Churn' THEN 0
+            ELSE COALESCE(arr_end.ARR, 0)
+        END AS ARR_AT_END_DATE,
+        arr_start.CUSTOMER_INTERNAL_TIER AS TIER_AT_ASSIGNMENT
+    FROM first_assignment f
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp ON comp.SK_COMPANY = f.SK_COMPANY
+    LEFT JOIN assignment_end_dates e
+        ON f.SK_CSM_OWNER = e.SK_CSM_OWNER
+        AND f.SK_COMPANY = e.SK_COMPANY
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD arr_start
+        ON f.SK_COMPANY = arr_start.SK_COMPANY
+        AND DATEADD(day, 1, f.ASSIGNED_DATE::DATE)::TIMESTAMP >= arr_start.EFFECTIVE_START_DATE
+        AND DATEADD(day, 1, f.ASSIGNED_DATE::DATE)::TIMESTAMP < COALESCE(arr_start.EFFECTIVE_END_DATE, '9999-12-31')
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD arr_end
+        ON f.SK_COMPANY = arr_end.SK_COMPANY
+        AND LEAST(COALESCE(e.LEFT_DATE, (SELECT relevant_date FROM params)), (SELECT relevant_date FROM params)) >= arr_end.EFFECTIVE_START_DATE
+        AND LEAST(COALESCE(e.LEFT_DATE, (SELECT relevant_date FROM params)), (SELECT relevant_date FROM params)) < COALESCE(arr_end.EFFECTIVE_END_DATE, '9999-12-31')
+    WHERE f.assignment_rank = 1
+),
+company_logins AS (
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        COUNT(DISTINCT ful.USER_EMAIL_ADDRESS) AS UNIQUE_LOGINS
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
+        ON da.SK_COMPANY = f.SK_COMPANY
+        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
+        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
+        ON ful.SK_ORG = do.SK_ORG
+        AND ful.LOGIN_DATE >= f.ASSIGNED_DATE::DATE
+        AND ful.LOGIN_DATE <= arr.LEFT_DATE::DATE
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
+company_self_service_runs AS (
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        SUM(ar.COUNT_SUCCEEDED + ar.COUNT_FAILED) AS TOTAL_SELF_SERVICE_RUNS
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
+        ON da.SK_COMPANY = f.SK_COMPANY
+        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
+        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_ACTION_RUNS ar
+        ON ar.SK_ORG = do.SK_ORG
+        AND ar._FACT_DATE >= f.ASSIGNED_DATE
+        AND ar._FACT_DATE <= arr.LEFT_DATE
+        AND ar.SK_ACTION IN (SELECT SK_ACTION FROM PORT_ANALYTICS_PROD.DWH.DIM_ACTION WHERE TRIGGER_TYPE = 'self-service')
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
+company_gong_calls AS (
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        COUNT(DISTINCT fc.SK_CONVERSATION) AS GONG_CALLS
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.MV_CALL_ASSOCIATED_COMPANY_FLAT caf
+        ON caf.ASSOCIATED_SK = f.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.FACT_CALL fc
+        ON fc.SK_CONVERSATION = caf.SK_CONVERSATION
+        AND fc.EFFECTIVE_START_DATETIME >= f.ASSIGNED_DATE
+        AND fc.EFFECTIVE_START_DATETIME <= arr.LEFT_DATE
+        AND ARRAY_CONTAINS(f.SK_CSM_OWNER::VARIANT, fc.ASSOCIATED_OWNER)
+        AND fc.DURATION_SECONDS > 600  -- Over 10 minutes
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
+purchased_seats AS (
+    SELECT SK_COMPANY, SK_LICENSE, START_DATE, END_DATE, TOTAL_LICENSED_USERS, IS_UNLIMITED, TYPE
+    FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
+    WHERE TYPE IN ('Expansion', 'New', 'Churn', 'Upsell')
+),
+company_ai_features AS (
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        SUM(ai.NUMBER_OF_EVENTS) AS AI_EVENTS
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
+        ON da.SK_COMPANY = f.SK_COMPANY
+        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
+        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_AI_USAGE ai
+        ON ai.SK_ORG = do.SK_ORG
+        AND ai._FACT_DATE >= f.ASSIGNED_DATE
+        AND ai._FACT_DATE <= arr.LEFT_DATE
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
+company_licensed_users AS (
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        ps.TOTAL_LICENSED_USERS AS LICENSED_USERS_AT_ASSIGNMENT,
+        ps.IS_UNLIMITED
+    FROM first_assignment f
+    INNER JOIN purchased_seats ps
+        ON ps.SK_COMPANY = f.SK_COMPANY
+        AND ps.START_DATE <= f.ASSIGNED_DATE::DATE
+        AND ps.END_DATE >= f.ASSIGNED_DATE::DATE - 1  -- Allow 1-day gap for renewals
+    WHERE f.assignment_rank = 1
+      AND ps.TOTAL_LICENSED_USERS != 0
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY f.SK_CSM_OWNER, f.SK_COMPANY
+        ORDER BY ps.START_DATE
+    ) = 1
+)
+SELECT 
+    t.DISPLAY_NAME,
+    t.EMAIL,
+    t.TITLE,
+    t.HIRE_DATE,
+    f.SK_COMPANY,
+    f.COMPANY_CRM_ID,
+    f.COMPANY_NAME,
+    f.ASSIGNED_DATE,
+    arr.LEFT_DATE,
+    DATEDIFF('quarter', f.ASSIGNED_DATE, arr.LEFT_DATE) AS QUARTERS_OWNED,
+    arr.ARR_AT_ASSIGNMENT,
+    arr.ARR_AT_END_DATE,
+    arr.TIER_AT_ASSIGNMENT,
+    CASE
+        WHEN arr.ARR_AT_END_DATE = 0 AND arr.ARR_AT_ASSIGNMENT > 0 THEN 'churn'
+        WHEN arr.ARR_AT_ASSIGNMENT > arr.ARR_AT_END_DATE            THEN 'downgrade'
+        WHEN arr.ARR_AT_ASSIGNMENT < arr.ARR_AT_END_DATE            THEN 'upgrade'
+        ELSE 'no_change'
+    END AS ARR_TYPE,
+    COALESCE(gc.GONG_CALLS, 0) AS GONG_CALLS,
+    -- Gong call targets per tier (annualized, prorated to ownership period):
+    --   Strategic : 48 calls/year
+    --   Core+     : 36 calls/year
+    --   Core      : 9 calls/year
+    --   Digital   : no target defined
+    ROUND(
+        DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) / 365.0 *
+        CASE arr.TIER_AT_ASSIGNMENT
+            WHEN 'Strategic' THEN 48
+            WHEN 'Core+'     THEN 36
+            WHEN 'Core'      THEN 9
+            ELSE 0
+        END
+    ) AS EXPECTED_GONG_CALLS,
+    COALESCE(cl.UNIQUE_LOGINS, 0) AS UNIQUE_LOGINS,
+    COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0) AS TOTAL_SELF_SERVICE_RUNS,
+    DIV0(COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0), NULLIF(DATEDIFF('month', f.ASSIGNED_DATE, arr.LEFT_DATE), 0)) AS MONTHLY_SELF_SERVICE_RUNS,
+    COALESCE(ai.AI_EVENTS, 0) AS AI_EVENTS,
+    COALESCE(lu.LICENSED_USERS_AT_ASSIGNMENT, 0) AS LICENSED_USERS_AT_ASSIGNMENT,
+    COALESCE(lu.IS_UNLIMITED, FALSE) AS IS_UNLIMITED,
+    CASE WHEN cco.SK_CSM_OWNER IS NOT NULL THEN TRUE ELSE FALSE END AS IS_CURRENT_CS
+FROM tsm_employees t
+LEFT JOIN first_assignment f 
+    ON t.SK_EMPLOYEE = f.SK_CSM_OWNER 
+    AND f.assignment_rank = 1
+LEFT JOIN arr_metrics arr
+    ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+    AND f.SK_COMPANY = arr.SK_COMPANY
+LEFT JOIN company_gong_calls gc
+    ON f.SK_CSM_OWNER = gc.SK_CSM_OWNER
+    AND f.SK_COMPANY = gc.SK_COMPANY
+LEFT JOIN company_logins cl
+    ON f.SK_CSM_OWNER = cl.SK_CSM_OWNER
+    AND f.SK_COMPANY = cl.SK_COMPANY
+LEFT JOIN company_self_service_runs ar
+    ON f.SK_CSM_OWNER = ar.SK_CSM_OWNER
+    AND f.SK_COMPANY = ar.SK_COMPANY
+LEFT JOIN company_ai_features ai
+    ON f.SK_CSM_OWNER = ai.SK_CSM_OWNER
+    AND f.SK_COMPANY = ai.SK_COMPANY
+LEFT JOIN company_licensed_users lu
+    ON f.SK_CSM_OWNER = lu.SK_CSM_OWNER
+    AND f.SK_COMPANY = lu.SK_COMPANY
+LEFT JOIN current_cs_owners cco
+    ON t.SK_EMPLOYEE = cco.SK_CSM_OWNER
+ORDER BY t.DISPLAY_NAME, f.ASSIGNED_DATE;
+
+-- Churned customers: companies that were customers but are now Churn lifecycle stage
+SELECT
+    c.COMPANY_NAME,
+    c.COMPANY_CRM_ID,
+    c.SK_COMPANY,
+    c.EXIT_ARR,
+    c.LICENSE_END_DATE,
+    e.DISPLAY_NAME AS LAST_CS_OWNER,
+    e.TITLE AS LAST_CS_OWNER_TITLE
+FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY c
+LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE e ON e.SK_EMPLOYEE = c.SK_CSM_OWNER
+WHERE c.LIFECYCLE_STAGE = 'Churn'
+ORDER BY c.LICENSE_END_DATE DESC;
