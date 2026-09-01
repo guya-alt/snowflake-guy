@@ -44,12 +44,12 @@ company_csm_changes AS (
         scd.EFFECTIVE_START_DATE,
         scd.EFFECTIVE_END_DATE,
         scd.IS_LATEST_VERSION,
+        -- LAG over ALL SCD records (not just current owners) to detect real transitions
         LAG(scd.SK_CSM_OWNER) OVER (
             PARTITION BY scd.SK_COMPANY 
             ORDER BY scd.EFFECTIVE_START_DATE
         ) AS PREV_CSM_OWNER
     FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD scd
-    INNER JOIN cs_owners_for_customers c ON scd.SK_CSM_OWNER = c.SK_CSM_OWNER
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp 
         ON comp.SK_COMPANY = scd.SK_COMPANY
         AND comp.LIFECYCLE_STAGE IN ('Customer', 'Churn')
@@ -69,18 +69,22 @@ first_assignment AS (
         ) AS assignment_rank
     FROM company_csm_changes c
     INNER JOIN tsm_employees t ON c.SK_CSM_OWNER = t.SK_EMPLOYEE
-    WHERE (
-        -- Historical assignments: must have started before relevant date
-        (c.SK_CSM_OWNER != COALESCE(c.PREV_CSM_OWNER, '') OR c.PREV_CSM_OWNER IS NULL)
-        AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
-        AND c.EFFECTIVE_START_DATE <= (SELECT relevant_date FROM params)
-        AND DATEDIFF('day', c.EFFECTIVE_START_DATE, COALESCE(c.EFFECTIVE_END_DATE, CURRENT_TIMESTAMP)) >= 1
-    ) OR (
-        -- Current active assignments: always include regardless of start date
-        c.IS_LATEST_VERSION = TRUE
-        AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
-        AND DATEDIFF('day', c.EFFECTIVE_START_DATE, COALESCE(c.EFFECTIVE_END_DATE, CURRENT_TIMESTAMP)) >= 1
-    )
+    WHERE c.EFFECTIVE_START_DATE >= '2024-01-01'  -- Exclude pre-2024 assignments (unreliable historical data)
+      AND DATEDIFF('day', c.EFFECTIVE_START_DATE, COALESCE(c.EFFECTIVE_END_DATE, CURRENT_TIMESTAMP)) >= 1  -- Min 1 day duration
+      AND (
+        (
+            -- Historical assignments: explicit LAG-detected owner change
+            (c.SK_CSM_OWNER != COALESCE(c.PREV_CSM_OWNER, '') OR c.PREV_CSM_OWNER IS NULL)
+            AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
+            AND c.EFFECTIVE_START_DATE <= (SELECT relevant_date FROM params)
+        ) OR (
+            -- Inherited assignments: TSM owned this company before their hire date
+            -- No LAG change exists after hire; pick first post-hire SCD record (ROW_NUMBER takes earliest)
+            c.PREV_CSM_OWNER = c.SK_CSM_OWNER  -- Owner didn't change in this SCD version
+            AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
+            AND c.EFFECTIVE_START_DATE::DATE < CURRENT_DATE()  -- Exclude today's pipeline refreshes
+        )
+      )
 ),
 assignment_end_dates AS (
     SELECT 
@@ -269,7 +273,7 @@ SELECT
     ) AS EXPECTED_GONG_CALLS,
     COALESCE(cl.UNIQUE_LOGINS, 0) AS UNIQUE_LOGINS,
     COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0) AS TOTAL_SELF_SERVICE_RUNS,
-    DIV0(COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0), NULLIF(DATEDIFF('month', f.ASSIGNED_DATE, arr.LEFT_DATE), 0)) AS MONTHLY_SELF_SERVICE_RUNS,
+    DIV0(COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0), NULLIF(DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE), 0) / 30.0) AS MONTHLY_SELF_SERVICE_RUNS,
     COALESCE(ai.AI_EVENTS, 0) AS AI_EVENTS,
     COALESCE(lu.LICENSED_USERS_AT_ASSIGNMENT, 0) AS LICENSED_USERS_AT_ASSIGNMENT,
     COALESCE(lu.IS_UNLIMITED, FALSE) AS IS_UNLIMITED,
