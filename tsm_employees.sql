@@ -61,6 +61,17 @@
 --
 -- AI EVENTS:
 --   - SUM of NUMBER_OF_EVENTS from FACT_AI_USAGE between ASSIGNED_DATE and LEFT_DATE.
+--   - FIRST_AI_USAGE_DATE: All-time earliest AI usage date per company (no window).
+--
+-- SEAT UTILIZATION:
+--   - SEAT_UTILIZATION = UNIQUE_LOGINS / LICENSED_USERS_AT_ASSIGNMENT.
+--   - SEAT_UTILIZATION_TARGET_MET: 1 if utilization meets tier/age threshold, else 0.
+--     Thresholds ramp up with customer age; after 10 months, full utilization (≥1.0)
+--     is required across all tiers except Digital (which requires ≥1.0 after 6 months):
+--       Strategic : <6mo ≥0.4 | <8mo ≥0.6 | <10mo ≥0.8 | else ≥1.0
+--       Core+     : <6mo ≥0.3 | <8mo ≥0.5 | <10mo ≥0.7 | else ≥1.0
+--       Core      : <6mo ≥0.3 | <8mo ≥0.5 | <10mo ≥0.6 | else ≥1.0
+--       Digital   : <6mo ≥0.3 |                         | else ≥1.0
 -- ============================================================
 
 -- Find company-level CS owner assignments for each TSM
