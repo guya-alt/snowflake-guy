@@ -29,6 +29,11 @@
 --
 -- FILTERS APPLIED TO FINAL OUTPUT:
 --   - Ownership period must be > 14 days (removes brief handoffs).
+--   - A license must have overlapped the ownership window. This drops
+--     pre-contract ownership: cases where the TSM held the account through
+--     the sales cycle and handed it off within days of the first license
+--     starting (e.g. abu dhabi, StoneX, bhp, ses engineering, Wisconsin),
+--     as well as companies with no license record at all.
 --   - TSMs with no qualifying assignments still appear (with NULL company rows).
 --
 -- ARR:
@@ -47,8 +52,8 @@
 --   - Monthly rate = total / (days_owned / 30).
 --
 -- LICENSED USERS:
---   - First non-zero license from FACT_PURCHASED_SEATS active within
---     30 days after assignment date (allows for license start lag).
+--   - First non-zero license from FACT_PURCHASED_SEATS active at any
+--     point during the ownership window (ASSIGNED_DATE to LEFT_DATE).
 --   - Duration filter: license must last > 1 day.
 --
 -- LOGINS:
@@ -204,7 +209,8 @@ company_logins AS (
         ON do.SK_ACCOUNT = da.SK_ACCOUNT
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
         ON ful.SK_ORG = do.SK_ORG
-        AND ful.LOGIN_DATE <= arr.LEFT_DATE::DATE  -- Cumulative: all logins up to end of ownership
+        AND ful.LOGIN_DATE >= f.ASSIGNED_DATE::DATE
+        AND ful.LOGIN_DATE <= arr.LEFT_DATE::DATE
     WHERE f.assignment_rank = 1
     GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
 ),
@@ -255,6 +261,13 @@ purchased_seats AS (
     FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
     WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
 ),
+company_first_license AS (
+    SELECT SK_COMPANY, MIN(START_DATE) AS FIRST_LICENSE_DATE
+    FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
+    WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
+      AND TOTAL_LICENSED_USERS > 0
+    GROUP BY SK_COMPANY
+),
 company_ai_features AS (
     SELECT
         f.SK_CSM_OWNER,
@@ -283,10 +296,13 @@ company_licensed_users AS (
         ps.TOTAL_LICENSED_USERS AS LICENSED_USERS_AT_ASSIGNMENT,
         ps.IS_UNLIMITED
     FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
     INNER JOIN purchased_seats ps
         ON ps.SK_COMPANY = f.SK_COMPANY
-        AND ps.START_DATE <= DATEADD('day', 30, f.ASSIGNED_DATE::DATE)  -- Look up to 30 days forward
-        AND ps.END_DATE >= f.ASSIGNED_DATE::DATE - 1  -- Allow 1-day gap for renewals
+        AND ps.START_DATE <= arr.LEFT_DATE::DATE  -- License starts before or on left date
+        AND ps.END_DATE >= f.ASSIGNED_DATE::DATE - 1  -- License ends after or near assignment
     WHERE f.assignment_rank = 1
       AND ps.TOTAL_LICENSED_USERS != 0
     QUALIFY ROW_NUMBER() OVER (
@@ -300,8 +316,9 @@ SELECT
     t.TITLE,
     t.HIRE_DATE,
     f.SK_COMPANY,
-    f.COMPANY_CRM_ID,
-    f.COMPANY_NAME,
+    dc.COMPANY_CRM_ID,
+    dc.COMPANY_NAME,
+    fl.FIRST_LICENSE_DATE,
     f.ASSIGNED_DATE,
     arr.LEFT_DATE,
     DATEDIFF('quarter', f.ASSIGNED_DATE, arr.LEFT_DATE) AS QUARTERS_OWNED,
@@ -360,8 +377,15 @@ LEFT JOIN company_licensed_users lu
     AND f.SK_COMPANY = lu.SK_COMPANY
 LEFT JOIN current_cs_owners cco
     ON t.SK_EMPLOYEE = cco.SK_CSM_OWNER
+LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc
+    ON f.SK_COMPANY = dc.SK_COMPANY
+LEFT JOIN company_first_license fl
+    ON f.SK_COMPANY = fl.SK_COMPANY
 WHERE f.SK_COMPANY IS NULL  -- TSMs with no assignments still show
-   OR DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) > 14  -- Only assignments > 14 days
+   OR (
+        DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) > 14  -- Only assignments > 14 days
+        AND lu.LICENSED_USERS_AT_ASSIGNMENT IS NOT NULL       -- Must have had a license during ownership
+      )
 ORDER BY t.DISPLAY_NAME, f.ASSIGNED_DATE;
 
 -- Churned customers: companies that were customers but are now Churn lifecycle stage
@@ -377,8 +401,3 @@ FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY c
 LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE e ON e.SK_EMPLOYEE = c.SK_CSM_OWNER
 WHERE c.LIFECYCLE_STAGE = 'Churn'
 ORDER BY c.LICENSE_END_DATE DESC;
-
-
-
-
-select * from
