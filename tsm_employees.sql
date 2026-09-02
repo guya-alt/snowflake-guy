@@ -99,6 +99,10 @@
 -- Shows when each TSM was first assigned to each company (customers only)
 -- Uses SCD table with LAG to detect when SK_CSM_OWNER changed
 WITH params AS (
+    -- Snapshot date for this scorecard run. Defaults to now for live use.
+    -- For a point-in-time snapshot replace CURRENT_TIMESTAMP() with a literal:
+    --   End of last full quarter : '2026-06-30 23:59:59'::TIMESTAMP
+    --   End of last full month   : '2026-08-31 23:59:59'::TIMESTAMP
     SELECT CURRENT_TIMESTAMP() AS relevant_date
 ),
 current_cs_owners AS (
@@ -237,6 +241,9 @@ company_logins AS (
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
         ON da.SK_COMPANY = f.SK_COMPANY
         AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
+        ON dc_lc.SK_COMPANY = da.SK_COMPANY
+        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
         ON do.SK_ACCOUNT = da.SK_ACCOUNT
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
@@ -258,6 +265,9 @@ company_self_service_runs AS (
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
         ON da.SK_COMPANY = f.SK_COMPANY
         AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
+        ON dc_lc.SK_COMPANY = da.SK_COMPANY
+        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
         ON do.SK_ACCOUNT = da.SK_ACCOUNT
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_ACTION_RUNS ar
@@ -312,6 +322,9 @@ company_ai_features AS (
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
         ON da.SK_COMPANY = f.SK_COMPANY
         AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
+        ON dc_lc.SK_COMPANY = da.SK_COMPANY
+        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
         ON do.SK_ACCOUNT = da.SK_ACCOUNT
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_AI_USAGE ai
@@ -373,6 +386,9 @@ logins_at_dates AS (
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
         ON da.SK_COMPANY = f.SK_COMPANY
         AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
+        ON dc_lc.SK_COMPANY = da.SK_COMPANY
+        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
     INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
         ON do.SK_ACCOUNT = da.SK_ACCOUNT
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
