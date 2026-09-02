@@ -65,13 +65,10 @@
 --
 -- SEAT UTILIZATION:
 --   - SEAT_UTILIZATION = UNIQUE_LOGINS / LICENSED_USERS_AT_ASSIGNMENT.
---   - SEAT_UTILIZATION_TARGET_MET: 1 if utilization meets tier/age threshold, else 0.
---     Thresholds ramp up with customer age; after 10 months, full utilization (≥1.0)
---     is required across all tiers except Digital (which requires ≥1.0 after 6 months):
---       Strategic : <6mo ≥0.4 | <8mo ≥0.6 | <10mo ≥0.8 | else ≥1.0
---       Core+     : <6mo ≥0.3 | <8mo ≥0.5 | <10mo ≥0.7 | else ≥1.0
---       Core      : <6mo ≥0.3 | <8mo ≥0.5 | <10mo ≥0.6 | else ≥1.0
---       Digital   : <6mo ≥0.3 |                         | else ≥1.0
+--   - LICENSES_AT_ASSIGNMENT / LICENSES_AT_LEFT: seats in force on each date
+--     (point-in-time; NULL when no license was active on that date).
+--   - UNIQUE_LOGINS_AT_ASSIGNMENT / UNIQUE_LOGINS_AT_LEFT: all-time cumulative
+--     distinct users as of each date. The difference is net new users.
 -- ============================================================
 
 -- Find company-level CS owner assignments for each TSM
@@ -314,6 +311,51 @@ company_first_ai_date AS (
       AND ai.NUMBER_OF_EVENTS > 0
     GROUP BY da.SK_COMPANY
 ),
+license_at_dates AS (
+    -- Seats in force at the assignment date and at the left date (point-in-time,
+    -- not "first overlapping"). NULL when no license was active on that date.
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        MAX(CASE WHEN ps.START_DATE <= f.ASSIGNED_DATE::DATE
+                  AND ps.END_DATE   >= f.ASSIGNED_DATE::DATE
+                 THEN ps.TOTAL_LICENSED_USERS END) AS LICENSES_AT_ASSIGNMENT,
+        MAX(CASE WHEN ps.START_DATE <= arr.LEFT_DATE::DATE
+                  AND ps.END_DATE   >= arr.LEFT_DATE::DATE
+                 THEN ps.TOTAL_LICENSED_USERS END) AS LICENSES_AT_LEFT
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    LEFT JOIN purchased_seats ps
+        ON ps.SK_COMPANY = f.SK_COMPANY
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
+logins_at_dates AS (
+    -- All-time cumulative distinct users as of the assignment date and as of the
+    -- left date. The difference between the two is net new users during ownership.
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= f.ASSIGNED_DATE::DATE
+                            THEN ful.USER_EMAIL_ADDRESS END) AS UNIQUE_LOGINS_AT_ASSIGNMENT,
+        COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= arr.LEFT_DATE::DATE
+                            THEN ful.USER_EMAIL_ADDRESS END) AS UNIQUE_LOGINS_AT_LEFT
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
+        ON da.SK_COMPANY = f.SK_COMPANY
+        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
+        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
+        ON ful.SK_ORG = do.SK_ORG
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
 company_licensed_users AS (
     SELECT
         f.SK_CSM_OWNER,
@@ -379,56 +421,11 @@ SELECT
     COALESCE(ai.AI_EVENTS, 0) AS AI_EVENTS,
     COALESCE(lu.LICENSED_USERS_AT_ASSIGNMENT, 0) AS LICENSED_USERS_AT_ASSIGNMENT,
     COALESCE(lu.IS_UNLIMITED, FALSE) AS IS_UNLIMITED,
+    lad.LICENSES_AT_ASSIGNMENT,
+    lad.LICENSES_AT_LEFT,
+    lod.UNIQUE_LOGINS_AT_ASSIGNMENT,
+    lod.UNIQUE_LOGINS_AT_LEFT,
     DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) AS SEAT_UTILIZATION,
-    -- Seat utilization target met (1 = met, 0 = not met). Thresholds ramp up with
-    -- customer age; from 10 months on, full utilization (>= 1.0) is required.
-    --   Strategic : <6mo 0.4 | <8mo 0.6 | <10mo 0.8 | else 1.0
-    --   Core+     : <6mo 0.3 | <8mo 0.5 | <10mo 0.7 | else 1.0
-    --   Core      : <6mo 0.3 | <8mo 0.5 | <10mo 0.6 | else 1.0
-    --   Digital   : <6mo 0.3 |                       else 1.0
-    CASE
-        WHEN arr.TIER_AT_ASSIGNMENT = 'Strategic' THEN
-            CASE
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 6
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.4 THEN 1
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 8
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.6 THEN 1
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 10
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.8 THEN 1
-                WHEN DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 1 THEN 1
-                ELSE 0
-            END
-        WHEN arr.TIER_AT_ASSIGNMENT = 'Core+' THEN
-            CASE
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 6
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.3 THEN 1
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 8
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.5 THEN 1
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 10
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.7 THEN 1
-                WHEN DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 1 THEN 1
-                ELSE 0
-            END
-        WHEN arr.TIER_AT_ASSIGNMENT = 'Core' THEN
-            CASE
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 6
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.3 THEN 1
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 8
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.5 THEN 1
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 10
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.6 THEN 1
-                WHEN DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 1 THEN 1
-                ELSE 0
-            END
-        WHEN arr.TIER_AT_ASSIGNMENT = 'Digital' THEN
-            CASE
-                WHEN DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) < 6
-                     AND DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 0.3 THEN 1
-                WHEN DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) >= 1 THEN 1
-                ELSE 0
-            END
-        ELSE NULL
-    END AS SEAT_UTILIZATION_TARGET_MET,
     CASE WHEN cco.SK_CSM_OWNER IS NOT NULL THEN TRUE ELSE FALSE END AS IS_CURRENT_CS
 FROM tsm_employees t
 LEFT JOIN first_assignment f 
@@ -460,6 +457,12 @@ LEFT JOIN company_first_license fl
     ON f.SK_COMPANY = fl.SK_COMPANY
 LEFT JOIN company_first_ai_date cfa
     ON f.SK_COMPANY = cfa.SK_COMPANY
+LEFT JOIN license_at_dates lad
+    ON f.SK_CSM_OWNER = lad.SK_CSM_OWNER
+    AND f.SK_COMPANY = lad.SK_COMPANY
+LEFT JOIN logins_at_dates lod
+    ON f.SK_CSM_OWNER = lod.SK_CSM_OWNER
+    AND f.SK_COMPANY = lod.SK_COMPANY
 WHERE f.SK_COMPANY IS NULL  -- TSMs with no assignments still show
    OR (
         DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) > 14  -- Only assignments > 14 days
