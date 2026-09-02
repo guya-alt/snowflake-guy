@@ -73,10 +73,16 @@
 --     match. NULL when no license was in force on that date.
 --
 -- INTEGRATIONS:
---   - INTEGRATIONS_AT_ASSIGNMENT / INTEGRATIONS_AT_LEFT: integrations live on
---     each date, i.e. created on/before it and not deleted by then. Uses
---     DIM_INTEGRATION._DELETED_TIMESTAMP_UTC for the point-in-time state rather
---     than the current _IS_DELETED flag.
+--   - INTEGRATION_TYPES_AT_ASSIGNMENT / INTEGRATION_TYPES_AT_LEFT: distinct
+--     integration types (data inputs) live on each date. This is the adoption
+--     breadth measure - prefer it over the instance counts.
+--   - INTEGRATIONS_AT_ASSIGNMENT / INTEGRATIONS_AT_LEFT: raw instance counts.
+--     Much higher than the type counts because one type can have many
+--     connections (Bell Canada: 7 types across 41 instances, 15 of them
+--     gitlab-v2), so instances overstate breadth of adoption.
+--   - "Live on a date" = created on/before it and not deleted by then, via
+--     _DELETED_TIMESTAMP_UTC rather than the current _IS_DELETED flag, so
+--     integrations removed later still count at the historical date.
 --
 --   NO PASS/FAIL SCORE. A tier/age threshold column was built and removed:
 --   utilization can't be scored fairly when the license changes mid-ownership.
@@ -375,12 +381,22 @@ logins_at_dates AS (
     GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
 ),
 integrations_at_dates AS (
-    -- Integrations live on the assignment date and on the left date. An integration
-    -- counts if it was created on/before the date and not yet deleted by then
-    -- (_DELETED_TIMESTAMP_UTC is populated for every deleted row, NULL for live ones).
+    -- Distinct integration TYPES (data inputs) live on the assignment date and on
+    -- the left date: created on/before the date and not deleted by then. Types, not
+    -- instances - a company can hold many connections of the same type (Bell Canada
+    -- has 15 gitlab-v2 instances) which is one capability, not fifteen. Uses
+    -- _DELETED_TIMESTAMP_UTC for point-in-time state, not the current _IS_DELETED.
     SELECT
         f.SK_CSM_OWNER,
         f.SK_COMPANY,
+        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
+                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
+                                  OR di._DELETED_TIMESTAMP_UTC > f.ASSIGNED_DATE)
+                            THEN di.INTEGRATION_TYPE END) AS INTEGRATION_TYPES_AT_ASSIGNMENT,
+        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= arr.LEFT_DATE
+                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
+                                  OR di._DELETED_TIMESTAMP_UTC > arr.LEFT_DATE)
+                            THEN di.INTEGRATION_TYPE END) AS INTEGRATION_TYPES_AT_LEFT,
         COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
                              AND (di._DELETED_TIMESTAMP_UTC IS NULL
                                   OR di._DELETED_TIMESTAMP_UTC > f.ASSIGNED_DATE)
@@ -474,6 +490,8 @@ SELECT
     lod.UNIQUE_LOGINS_AT_LEFT,
     DIV0(lod.UNIQUE_LOGINS_AT_ASSIGNMENT, lad.LICENSES_AT_ASSIGNMENT) AS SEAT_UTILIZATION_AT_ASSIGNMENT,
     DIV0(lod.UNIQUE_LOGINS_AT_LEFT, lad.LICENSES_AT_LEFT) AS SEAT_UTILIZATION_AT_LEFT,
+    iad.INTEGRATION_TYPES_AT_ASSIGNMENT,
+    iad.INTEGRATION_TYPES_AT_LEFT,
     iad.INTEGRATIONS_AT_ASSIGNMENT,
     iad.INTEGRATIONS_AT_LEFT,
     -- TRUE only on the row representing the company's live assignment: the row's
