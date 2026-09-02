@@ -70,38 +70,16 @@
 --   - UNIQUE_LOGINS_AT_ASSIGNMENT / UNIQUE_LOGINS_AT_LEFT: all-time cumulative
 --     distinct users as of each date. The difference is net new users.
 --
---   NO PASS/FAIL SCORE IS COMPUTED. A tier/age threshold column
---   (SEAT_UTILIZATION_TARGET_MET) was implemented and then removed, because
---   seat utilization cannot be scored fairly when the license changes during
---   ownership. Both possible denominators are wrong:
---
---     a) Denominator = seats at LEFT_DATE (current license)
---        PENALIZES THE TSM FOR UPSELLING. Seats sold during ownership inflate
---        the denominator, so utilization falls and the owner looks worse for
---        having done good work. Example: 540 active users on a 600-seat
---        license = 90% (passing). The TSM upsells to 800 seats; with the same
---        540 users the ratio drops to 68% and now fails. The successful
---        expansion is recorded as a decline in adoption.
---
---     b) Denominator = seats at ASSIGNED_DATE (license at handover)
---        Avoids penalizing upsells, but goes stale. It ignores every seat
---        added afterwards, so the ratio is measured against a license that no
---        longer exists and utilization is overstated. This affects 35 of 124
---        rows (28%), and in every one of those cases the license grew - so the
---        bias is one-directional and always flattering.
---
---     A further problem affects either choice: UNIQUE_LOGINS accumulates over
---     the whole ownership window while the denominator is a single point in
---     time. Utilization therefore only ever rises with tenure, regardless of
---     real adoption, so long assignments mechanically outscore short ones.
---     (Thomson Reuters appears twice: 0.04 at 0 months and 2.01 at 11 months,
---     same customer, same 500 seats.) Ratios above 100% confirm this is not
---     concurrent utilization but cumulative reach.
---
---   The four point-in-time columns are therefore exposed raw, so utilization
---   can be judged with the license change visible rather than hidden inside a
---   single pass/fail flag. Comparing LICENSES_AT_ASSIGNMENT to
---   LICENSES_AT_LEFT shows whether an upsell occurred during ownership.
+--   NO PASS/FAIL SCORE. A tier/age threshold column was built and removed:
+--   utilization can't be scored fairly when the license changes mid-ownership.
+--     - Seats at LEFT_DATE penalizes upselling: 540 users on 600 seats = 90%
+--       (pass); upsell to 800 and the same users score 68% (fail).
+--     - Seats at ASSIGNED_DATE avoids that but goes stale, ignoring seats added
+--       later. Affects 35/124 rows, license grew in all - always flattering.
+--     - Either way, UNIQUE_LOGINS accumulates while the denominator is a
+--       snapshot, so utilization rises with tenure regardless of adoption.
+--   The four columns are exposed raw instead; comparing LICENSES_AT_ASSIGNMENT
+--   to LICENSES_AT_LEFT shows whether an upsell occurred during ownership.
 -- ============================================================
 
 -- Find company-level CS owner assignments for each TSM
