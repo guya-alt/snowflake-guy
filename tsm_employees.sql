@@ -72,6 +72,12 @@
 --     divided at its own point in time, so numerator and denominator always
 --     match. NULL when no license was in force on that date.
 --
+-- INTEGRATIONS:
+--   - INTEGRATIONS_AT_ASSIGNMENT / INTEGRATIONS_AT_LEFT: integrations live on
+--     each date, i.e. created on/before it and not deleted by then. Uses
+--     DIM_INTEGRATION._DELETED_TIMESTAMP_UTC for the point-in-time state rather
+--     than the current _IS_DELETED flag.
+--
 --   NO PASS/FAIL SCORE. A tier/age threshold column was built and removed:
 --   utilization can't be scored fairly when the license changes mid-ownership.
 --     - Seats at LEFT_DATE penalizes upselling: 540 users on 600 seats = 90%
@@ -368,6 +374,35 @@ logins_at_dates AS (
     WHERE f.assignment_rank = 1
     GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
 ),
+integrations_at_dates AS (
+    -- Integrations live on the assignment date and on the left date. An integration
+    -- counts if it was created on/before the date and not yet deleted by then
+    -- (_DELETED_TIMESTAMP_UTC is populated for every deleted row, NULL for live ones).
+    SELECT
+        f.SK_CSM_OWNER,
+        f.SK_COMPANY,
+        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
+                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
+                                  OR di._DELETED_TIMESTAMP_UTC > f.ASSIGNED_DATE)
+                            THEN di.SK_INTEGRATION END) AS INTEGRATIONS_AT_ASSIGNMENT,
+        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= arr.LEFT_DATE
+                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
+                                  OR di._DELETED_TIMESTAMP_UTC > arr.LEFT_DATE)
+                            THEN di.SK_INTEGRATION END) AS INTEGRATIONS_AT_LEFT
+    FROM first_assignment f
+    INNER JOIN arr_metrics arr
+        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
+        AND f.SK_COMPANY = arr.SK_COMPANY
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
+        ON da.SK_COMPANY = f.SK_COMPANY
+        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
+        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_INTEGRATION di
+        ON di.SK_ORG = do.SK_ORG
+    WHERE f.assignment_rank = 1
+    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+),
 company_licensed_users AS (
     SELECT
         f.SK_CSM_OWNER,
@@ -439,11 +474,13 @@ SELECT
     lod.UNIQUE_LOGINS_AT_LEFT,
     DIV0(lod.UNIQUE_LOGINS_AT_ASSIGNMENT, lad.LICENSES_AT_ASSIGNMENT) AS SEAT_UTILIZATION_AT_ASSIGNMENT,
     DIV0(lod.UNIQUE_LOGINS_AT_LEFT, lad.LICENSES_AT_LEFT) AS SEAT_UTILIZATION_AT_LEFT,
+    iad.INTEGRATIONS_AT_ASSIGNMENT,
+    iad.INTEGRATIONS_AT_LEFT,
     -- TRUE only on the row representing the company's live assignment: the row's
     -- owner is the current owner in DIM_COMPANY and ownership has not ended.
     -- At most one row per company can be TRUE.
     CASE WHEN dc.SK_CSM_OWNER = f.SK_CSM_OWNER
-           AND arr.LEFT_DATE >= (SELECT relevant_date FROM params)
+           AND arr.LEFT_DATE::DATE >= (SELECT relevant_date FROM params)
          THEN TRUE ELSE FALSE END AS IS_CURRENT_CS
 FROM tsm_employees t
 LEFT JOIN first_assignment f 
@@ -479,6 +516,9 @@ LEFT JOIN license_at_dates lad
 LEFT JOIN logins_at_dates lod
     ON f.SK_CSM_OWNER = lod.SK_CSM_OWNER
     AND f.SK_COMPANY = lod.SK_COMPANY
+LEFT JOIN integrations_at_dates iad
+    ON f.SK_CSM_OWNER = iad.SK_CSM_OWNER
+    AND f.SK_COMPANY = iad.SK_COMPANY
 WHERE f.SK_COMPANY IS NULL  -- TSMs with no assignments still show
    OR (
         DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) > 14  -- Only assignments > 14 days
