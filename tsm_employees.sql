@@ -64,11 +64,13 @@
 --   - FIRST_AI_USAGE_DATE: All-time earliest AI usage date per company (no window).
 --
 -- SEAT UTILIZATION:
---   - SEAT_UTILIZATION = UNIQUE_LOGINS / LICENSED_USERS_AT_ASSIGNMENT.
 --   - LICENSES_AT_ASSIGNMENT / LICENSES_AT_LEFT: seats in force on each date
 --     (point-in-time; NULL when no license was active on that date).
 --   - UNIQUE_LOGINS_AT_ASSIGNMENT / UNIQUE_LOGINS_AT_LEFT: all-time cumulative
 --     distinct users as of each date. The difference is net new users.
+--   - SEAT_UTILIZATION_AT_ASSIGNMENT / SEAT_UTILIZATION_AT_LEFT: each pair
+--     divided at its own point in time, so numerator and denominator always
+--     match. NULL when no license was in force on that date.
 --
 --   NO PASS/FAIL SCORE. A tier/age threshold column was built and removed:
 --   utilization can't be scored fairly when the license changes mid-ownership.
@@ -76,10 +78,9 @@
 --       (pass); upsell to 800 and the same users score 68% (fail).
 --     - Seats at ASSIGNED_DATE avoids that but goes stale, ignoring seats added
 --       later. Affects 35/124 rows, license grew in all - always flattering.
---     - Either way, UNIQUE_LOGINS accumulates while the denominator is a
---       snapshot, so utilization rises with tenure regardless of adoption.
---   The four columns are exposed raw instead; comparing LICENSES_AT_ASSIGNMENT
---   to LICENSES_AT_LEFT shows whether an upsell occurred during ownership.
+--   Both endpoints are exposed instead, so the license change stays visible:
+--   comparing the two shows whether an upsell occurred during ownership, and
+--   utilization can be read as a trajectory rather than a single verdict.
 -- ============================================================
 
 -- Find company-level CS owner assignments for each TSM
@@ -436,7 +437,8 @@ SELECT
     lad.LICENSES_AT_LEFT,
     lod.UNIQUE_LOGINS_AT_ASSIGNMENT,
     lod.UNIQUE_LOGINS_AT_LEFT,
-    DIV0(COALESCE(cl.UNIQUE_LOGINS, 0), lu.LICENSED_USERS_AT_ASSIGNMENT) AS SEAT_UTILIZATION,
+    DIV0(lod.UNIQUE_LOGINS_AT_ASSIGNMENT, lad.LICENSES_AT_ASSIGNMENT) AS SEAT_UTILIZATION_AT_ASSIGNMENT,
+    DIV0(lod.UNIQUE_LOGINS_AT_LEFT, lad.LICENSES_AT_LEFT) AS SEAT_UTILIZATION_AT_LEFT,
     CASE WHEN cco.SK_CSM_OWNER IS NOT NULL THEN TRUE ELSE FALSE END AS IS_CURRENT_CS
 FROM tsm_employees t
 LEFT JOIN first_assignment f 
