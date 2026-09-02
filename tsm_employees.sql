@@ -1,4 +1,63 @@
 
+-- ============================================================
+-- TSM SCORECARD V2 — Company-Level Assignment Metrics
+-- ============================================================
+--
+-- PURPOSE:
+--   One row per TSM × Company assignment showing key success metrics
+--   for the period the TSM owned the company.
+--
+-- SCOPE (who is included):
+--   - TSMs: DIM_EMPLOYEE where TITLE contains TSM, Technical Success Manager,
+--           or Solution Architect; hired on or before relevant_date.
+--   - Only TSMs who are CURRENTLY assigned to at least one active customer
+--     (current_cs_owners via DIM_COMPANY where LIFECYCLE_STAGE = 'Customer').
+--   - Companies: LIFECYCLE_STAGE IN ('Customer', 'Churn').
+--
+-- ASSIGNMENT DETECTION (how we find the assigned date):
+--   1. Explicit change: SK_CSM_OWNER changed in DIM_COMPANY_SCD (LAG detection).
+--   2. Inherited: TSM was already the owner before their hire date; use
+--      the first SCD record on or after hire date as the assigned date.
+--   - Pre-2024 SCD records are excluded (unreliable historical data).
+--   - SCD versions lasting < 1 day are excluded (sub-day blips/pipeline noise).
+--   - Today's pipeline SCD refreshes are excluded from inherited assignments.
+--
+-- LEFT_DATE (end of ownership):
+--   - If the company was reassigned to a different owner: date of that change.
+--   - If still assigned: CURRENT_TIMESTAMP (today).
+--   - In all cases capped at relevant_date (CURRENT_TIMESTAMP).
+--
+-- FILTERS APPLIED TO FINAL OUTPUT:
+--   - Ownership period must be > 14 days (removes brief handoffs).
+--   - TSMs with no qualifying assignments still appear (with NULL company rows).
+--
+-- ARR:
+--   - ARR_AT_ASSIGNMENT: from DIM_COMPANY_SCD, looked up 1 day after
+--     assignment date to avoid intra-day blips.
+--   - ARR_AT_END_DATE: from DIM_COMPANY_SCD at LEFT_DATE.
+--     For churned companies (LIFECYCLE_STAGE = 'Churn'): forced to 0.
+--
+-- GONG CALLS:
+--   - Completed calls > 10 minutes where TSM is listed as owner.
+--   - Targets (annualized, prorated by ownership days):
+--     Strategic 48/yr, Core+ 36/yr, Core 9/yr, Digital N/A.
+--
+-- SELF-SERVICE ACTIONS:
+--   - Only TRIGGER_TYPE = 'self-service' from FACT_ACTION_RUNS.
+--   - Monthly rate = total / (days_owned / 30).
+--
+-- LICENSED USERS:
+--   - First non-zero license from FACT_PURCHASED_SEATS active within
+--     30 days after assignment date (allows for license start lag).
+--   - Duration filter: license must last > 1 day.
+--
+-- LOGINS:
+--   - Distinct user emails who logged in between ASSIGNED_DATE and LEFT_DATE.
+--
+-- AI EVENTS:
+--   - SUM of NUMBER_OF_EVENTS from FACT_AI_USAGE between ASSIGNED_DATE and LEFT_DATE.
+-- ============================================================
+
 -- Find company-level CS owner assignments for each TSM
 -- Shows when each TSM was first assigned to each company (customers only)
 -- Uses SCD table with LAG to detect when SK_CSM_OWNER changed
@@ -145,8 +204,7 @@ company_logins AS (
         ON do.SK_ACCOUNT = da.SK_ACCOUNT
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
         ON ful.SK_ORG = do.SK_ORG
-        AND ful.LOGIN_DATE >= f.ASSIGNED_DATE::DATE
-        AND ful.LOGIN_DATE <= arr.LEFT_DATE::DATE
+        AND ful.LOGIN_DATE <= arr.LEFT_DATE::DATE  -- Cumulative: all logins up to end of ownership
     WHERE f.assignment_rank = 1
     GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
 ),
@@ -195,7 +253,7 @@ company_gong_calls AS (
 purchased_seats AS (
     SELECT SK_COMPANY, SK_LICENSE, START_DATE, END_DATE, TOTAL_LICENSED_USERS, IS_UNLIMITED, TYPE
     FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
-    WHERE TYPE IN ('Expansion', 'New', 'Churn', 'Upsell')
+    WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
 ),
 company_ai_features AS (
     SELECT
@@ -227,7 +285,7 @@ company_licensed_users AS (
     FROM first_assignment f
     INNER JOIN purchased_seats ps
         ON ps.SK_COMPANY = f.SK_COMPANY
-        AND ps.START_DATE <= f.ASSIGNED_DATE::DATE
+        AND ps.START_DATE <= DATEADD('day', 30, f.ASSIGNED_DATE::DATE)  -- Look up to 30 days forward
         AND ps.END_DATE >= f.ASSIGNED_DATE::DATE - 1  -- Allow 1-day gap for renewals
     WHERE f.assignment_rank = 1
       AND ps.TOTAL_LICENSED_USERS != 0
@@ -302,6 +360,8 @@ LEFT JOIN company_licensed_users lu
     AND f.SK_COMPANY = lu.SK_COMPANY
 LEFT JOIN current_cs_owners cco
     ON t.SK_EMPLOYEE = cco.SK_CSM_OWNER
+WHERE f.SK_COMPANY IS NULL  -- TSMs with no assignments still show
+   OR DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) > 14  -- Only assignments > 14 days
 ORDER BY t.DISPLAY_NAME, f.ASSIGNED_DATE;
 
 -- Churned customers: companies that were customers but are now Churn lifecycle stage
@@ -317,3 +377,8 @@ FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY c
 LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE e ON e.SK_EMPLOYEE = c.SK_CSM_OWNER
 WHERE c.LIFECYCLE_STAGE = 'Churn'
 ORDER BY c.LICENSE_END_DATE DESC;
+
+
+
+
+select * from
