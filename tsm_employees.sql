@@ -1,150 +1,53 @@
 -- ============================================================
 -- TSM SCORECARD V2 - Ownership-Period Metrics
--- ============================================================
 --
--- PURPOSE:
---   One row per TSM x Company OWNERSHIP PERIOD, showing success metrics for
---   exactly the span the TSM held that company. A TSM who lost an account and
---   later regained it gets TWO rows, one per period; IS_CURRENT_CS marks the
---   live one. At most one row per company can be IS_CURRENT_CS.
+-- One row per TSM x Company OWNERSHIP PERIOD. A TSM who lost an account and
+-- later regained it gets two rows; IS_CURRENT_CS marks the live one, and at
+-- most one row per company can be TRUE.
 --
--- PIPELINE (in order):
---   1.  params                     - snapshot date
---   2.  cs_owner_pool              - every CS owner in DIM_COMPANY
---   3.  customer_pool              - Customer/Churn companies + tier + owner
---   4.  tsm_employees              - the owner roster (hire dates)
---   5.  scd_owners -> ownership_periods
---                                  - SCD collapsed into ownership periods
---   6.  arr_and_tier_at_dates      - TIER_AT_ASSIGNMENT + ARR at both dates
---   7.  logins_at_dates            - cumulative unique logins at both dates
---   8.  ai_at_dates                - cumulative AI events at both dates
---   9.  company_first_ai_date      - all-time FIRST_AI_USAGE_DATE
---   10. gong_calls                 - calls made DURING the period
---   11. self_service_at_dates      - cumulative self-service runs at both dates
---   12. integration_types_at_dates - live integration types at both dates
---   13. final SELECT               - derived columns + 14-day filter
+-- Scope: owners with a TSM / Technical Success Manager / Solution Architect
+-- title who currently own at least one active customer (so TSMs owning nothing
+-- today are excluded, along with their history). Companies: Customer / Churn.
 --
--- OWNERSHIP PERIOD DETECTION (gaps-and-islands over DIM_COMPANY_SCD):
---   The SCD is heavily fragmented - one company can carry hundreds of versions
---   (cyberark alone has ~293 since Aug 2025), so an SCD version is NOT an
---   assignment. Versions are collapsed into contiguous same-owner runs:
---     Pass 1  : collapse consecutive same-owner versions into runs.
---     Suppress: drop runs under 24h of ELAPSED time - a different owner
---               appearing briefly is pipeline noise, not a handoff. Hours, not
---               DATEDIFF('day'): a ~12h run crossing midnight returns day-diff
---               of 1 and would survive (this is how honeybook slipped through).
---     Pass 2  : re-collapse, so two runs of the same owner separated only by a
---               suppressed blip MERGE into one period. This handles
---               cyberark/honeybook without special-casing, while genuine
---               multi-day handoffs still split the timeline.
---   Pre-2024 SCD records are excluded (unreliable historical data - the SCD
---   reaches back to 2022-05-08, ~35k rows, predating the company).
---   ASSIGNED_DATE is floored by whichever of three rules is latest, and
---   ASSIGNED_DATE_SOURCE records which one applied:
---     'crm_event'           - the CRM run start; findable in HubSpot.
---     'hire_date'           - the CRM claims ownership before the owner was
---                             hired, which is impossible.
---     'customer_conversion' - the CRM claims CS ownership before the company
---                             became a customer. Before conversion the account
---                             is a Lead/SQL and its "owner" is a sales-cycle
---                             owner, not a CS owner.
---   Only 'crm_event' dates appear in HubSpot's CS Owner change history. The
---   other two are derived corrections, so searching HubSpot for them finds
---   nothing - by design, not by error.
---   Note a company's first SCD record is its HubSpot creation timestamp
---   (DIM_COMPANY.CREATED_AT matches it exactly), and an owner set at creation
---   is never logged as a "change" by HubSpot, which only records changes TO a
---   value.
+-- ASSIGNED_DATE is the latest of three floors; ASSIGNED_DATE_SOURCE says which
+-- applied. Only 'crm_event' dates exist in HubSpot's CS Owner history - the
+-- other two are derived corrections, so searching HubSpot for them finds
+-- nothing. A company's first SCD record is its HubSpot creation timestamp, and
+-- an owner set at creation is never logged as a "change".
+--   crm_event           - the CRM run start
+--   hire_date           - CRM claims ownership before the owner was hired
+--   customer_conversion - CRM claims CS ownership before the company was a
+--                         customer (that owner ran the sales cycle)
 --
--- DATE ARITHMETIC:
---   MONTHS_OWNED and CUSTOMER_AGE_MONTHS use elapsed days / 30.44, NOT
---   DATEDIFF('month'). DATEDIFF counts calendar-boundary crossings, not elapsed
---   time: a 33-day period inside one month returns 0, while a 2-day period
---   spanning month end returns 1. The same trap applies to DATEDIFF('day') and
---   is why the blip guard above is expressed in hours.
---   CUSTOMER_AGE_MONTHS can be NEGATIVE - that marks pre-contract ownership,
---   where the TSM held the account before it had a licence.
+-- Metric shapes:
+--   *_AT_ASSIGNMENT / *_AT_LEFT are all-time cumulative totals as of each date,
+--   NOT period totals. AI_EVENTS and SELF_SERVICE_RUNS are additive, so period
+--   activity = (_AT_LEFT - _AT_ASSIGNMENT). UNIQUE_LOGINS is COUNT(DISTINCT),
+--   so its difference is net user growth and does not subtract cleanly.
+--   GONG_CALLS is the exception: calls made DURING the period.
+--   INTEGRATION_TYPES_AT_* is point-in-time, so it can legitimately DECREASE
+--   when integrations are deleted.
 --
--- LEFT_DATE:
---   End of the ownership run, capped at relevant_date. For a still-open run
---   this is relevant_date.
+-- Dates use elapsed days / 30.44, not DATEDIFF('month'/'quarter'), which counts
+-- calendar-boundary crossings: a 33-day period inside one month returns 0.
 --
--- SCOPE:
---   - Owners: DIM_EMPLOYEE where TITLE contains TSM, Technical Success Manager,
---     or Solution Architect, hired on or before relevant_date, AND currently
---     assigned to at least one active customer (cs_owner_pool). Note this
---     excludes TSMs who currently own nothing (e.g. Magali Philippe, Chris
---     Hodson, Tal Shladovsky) along with their historical periods.
---   - Companies: LIFECYCLE_STAGE IN ('Customer', 'Churn').
---
--- METRIC SHAPES - read this before interpreting the columns:
---   Cumulative pairs (*_AT_ASSIGNMENT / *_AT_LEFT) are all-time totals as of
---   each date, with NO lower bound. They are not period totals.
---     - AI_EVENTS and SELF_SERVICE_RUNS are additive, so activity DURING the
---       period is recoverable as (_AT_LEFT - _AT_ASSIGNMENT).
---     - UNIQUE_LOGINS is COUNT(DISTINCT ...), so its difference is NET user
---       growth, not the number of new users. It does not subtract cleanly.
---   GONG_CALLS is the exception: an in-window count of calls made between
---   ASSIGNED_DATE and LEFT_DATE, not a cumulative pair.
---
--- ARR:
---   - ARR_AT_ASSIGNMENT: from DIM_COMPANY_SCD, looked up 1 day after the
---     assignment date to avoid intra-day blips.
---   - ARR_AT_END_DATE: from DIM_COMPANY_SCD at LEFT_DATE. For churned companies
---     (LIFECYCLE_STAGE = 'Churn') this is forced to 0, so a churned account
---     reports 0 rather than its last contract value.
---
--- GONG CALLS:
---   Completed calls over 10 minutes where the TSM is listed as owner.
---   Targets (annualized, prorated by period length):
---     Strategic 48/yr, Core+ 36/yr, Core 9/yr, Digital N/A.
---
--- INTEGRATIONS:
---   INTEGRATION_TYPES_AT_ASSIGNMENT / _AT_LEFT: distinct integration types
---   (data inputs) live on each date - the adoption BREADTH measure. "Live on a
---   date" uses _DELETED_TIMESTAMP_UTC rather than the current _IS_DELETED flag,
---   so integrations removed later still count at the historical date.
---   Raw instance counts are deliberately not exposed: one type can have many
---   connections (Bell Canada: 7 types across 41 instances, 15 of them
---   gitlab-v2), so instances overstate breadth.
---
--- FILTERS APPLIED TO FINAL OUTPUT:
---   - Historical periods must exceed 14 days (removes brief handoffs).
---     CURRENT periods are exempt, so a live assignment always appears
---     regardless of tenure.
---   - No license requirement. The old "a license must have overlapped the
---     ownership window" filter was removed, so companies with no license
---     record still appear (e.g. MSD, whose only FACT_PURCHASED_SEATS row has
---     NULL start/end dates). This also means pre-contract periods are no
---     longer suppressed; under the period model they surface as separate
---     historical rows rather than corrupting the current one.
---   - TSMs with no qualifying periods still appear (with NULL company rows).
---
--- NO PASS/FAIL SCORE, AND NO SEAT UTILIZATION. Licence and seat-utilization
---   columns were removed. Utilization could not be scored fairly when the
---   licence changed mid-ownership: seats at LEFT_DATE penalizes upselling
---   (540 users on 600 seats = 90% pass; upsell to 800 and the same users score
---   68% fail), while seats at ASSIGNED_DATE goes stale and ignores seats added
---   later. UNIQUE_LOGINS_AT_* is retained as the raw adoption signal.
+-- Final filters: historical periods must exceed 14 days; current periods are
+-- exempt. No licence requirement, so companies with no licence record still
+-- appear. TSMs with no qualifying periods appear with NULL company rows.
 -- ============================================================
 
 WITH params AS (
-    -- Snapshot date: last second of the previous calendar month (dynamic).
-    -- To pin to a specific point in time, replace with a literal, e.g.:
-    --   End of last full quarter : '2026-06-30 23:59:59'::TIMESTAMP
+    -- Snapshot date. Replace with a literal to pin a point in time.
     SELECT DATEADD('second', -1, DATE_TRUNC('month', CURRENT_DATE()))::TIMESTAMP AS relevant_date
 ),
 cs_owner_pool AS (
-    -- The full CS owner pool: everyone currently assigned to at least one
-    -- active customer. Gates the roster below.
+    -- Owners currently holding at least one active customer. Gates the roster.
     SELECT DISTINCT SK_CSM_OWNER
     FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
     WHERE LIFECYCLE_STAGE = 'Customer'
       AND SK_CSM_OWNER IS NOT NULL
 ),
 customer_pool AS (
-    -- The customer pool: one row per company, carrying tier, lifecycle and the
-    -- CURRENT owner. Single source for the tier lookup and churn ARR override.
     SELECT
         SK_COMPANY,
         COMPANY_CRM_ID,
@@ -156,21 +59,33 @@ customer_pool AS (
     WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')
 ),
 company_became_customer AS (
-    -- When each company FIRST became a customer. CS ownership of a customer
-    -- cannot predate this: before conversion the account is a Lead/SQL and any
-    -- "owner" on it is a sales-cycle owner (often the Solution Architect), not
-    -- a CS owner. e.g. CAPITAL COM IP LTD was created 2025-01-09 as a Lead with
-    -- Ayodeji as owner and only converted 2025-12-23, so his Jan-Dec 2025
-    -- stretch was never customer ownership.
-    -- No 2024 floor here: this is used only as a lower bound, and an earlier
-    -- conversion date simply never clips anything.
-    SELECT SK_COMPANY, MIN(EFFECTIVE_START_DATE) AS BECAME_CUSTOMER_AT
-    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD
-    WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')
-    GROUP BY SK_COMPANY
+    -- Transactional conversion date, used to floor ASSIGNED_DATE. Deliberately
+    -- NOT from LIFECYCLE_STAGE, which is manually maintained and unreliable both
+    -- ways: a rep can assign a CS owner days before flipping the stage, and the
+    -- pre-2024 SCD carries junk stage history (oligosecurity.io reads 'Customer'
+    -- from 2022-12-07 against a first won deal of 2025-09-29).
+    -- Falls back to first licence start, which trails the won deal by ~13 days.
+    -- One owned company has neither and so gets no floor.
+    SELECT
+        c.SK_COMPANY,
+        COALESCE(w.first_won, l.first_lic)::TIMESTAMP AS BECAME_CUSTOMER_AT
+    FROM (SELECT SK_COMPANY FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
+          WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')) c
+    LEFT JOIN (
+        SELECT SK_COMPANY, MIN(DEAL_CLOSED_DATE) AS first_won
+        FROM PORT_ANALYTICS_PROD.DWH.FACT_DEALS
+        WHERE IS_WON = TRUE AND DEAL_CLOSED_DATE IS NOT NULL
+        GROUP BY SK_COMPANY
+    ) w ON w.SK_COMPANY = c.SK_COMPANY
+    LEFT JOIN (
+        SELECT SK_COMPANY, MIN(START_DATE) AS first_lic
+        FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
+        WHERE TOTAL_LICENSED_USERS > 0
+          AND DATEDIFF(day, START_DATE, END_DATE) > 1
+        GROUP BY SK_COMPANY
+    ) l ON l.SK_COMPANY = c.SK_COMPANY
 ),
 tsm_employees AS (
-    -- Owner roster with hire dates.
     SELECT
         e.SK_EMPLOYEE,
         e.EMPLOYEE_ID,
@@ -186,11 +101,10 @@ tsm_employees AS (
       AND e.ORIGINAL_START_DATE <= (SELECT relevant_date FROM params)
 ),
 company_org_map AS (
-    -- Shared company -> account -> org mapping, built once instead of repeated
-    -- in every metric CTE. Grain is one row per (SK_COMPANY, SK_ACCOUNT,
-    -- SK_ORG), so SUM/COUNT fan-out matches the original inline joins.
-    -- IS_ACTIVE_LIFECYCLE carries the lifecycle filter as a flag: the
-    -- login/self-service/AI CTEs require it, integrations do not.
+    -- Shared company -> account -> org mapping. Grain is one row per
+    -- (SK_COMPANY, SK_ACCOUNT, SK_ORG), which the metric SUMs depend on.
+    -- IS_ACTIVE_LIFECYCLE is a flag, not a filter: the login/self-service/AI
+    -- CTEs require it, integrations do not.
     SELECT
         da.SK_COMPANY,
         da.SK_ACCOUNT,
@@ -203,10 +117,12 @@ company_org_map AS (
         ON dc_lc.SK_COMPANY = da.SK_COMPANY
     WHERE da.IS_COMMERCIAL_ACCOUNT = TRUE
 ),
--- ---------- ownership period detection (gaps-and-islands) ----------
+-- ---------- ownership periods (gaps-and-islands over the SCD) ----------
+-- The SCD is heavily fragmented (one company can carry hundreds of versions),
+-- so a version is NOT an assignment. Collapse consecutive same-owner versions
+-- into runs, drop sub-24h runs as pipeline noise, then re-collapse so runs
+-- separated only by a suppressed blip merge back together.
 scd_owners AS (
-    -- Raw SCD ownership versions in scope. Individual versions are NOT
-    -- assignments; they are collapsed into runs below.
     SELECT
         scd.SK_COMPANY,
         scd.SK_CSM_OWNER,
@@ -219,7 +135,6 @@ scd_owners AS (
       AND scd.EFFECTIVE_START_DATE >= '2024-01-01'  -- Pre-2024 history is unreliable
 ),
 run_pass1_flag AS (
-    -- Pass 1: mark where the owner actually changes.
     SELECT s.*,
         CASE WHEN s.SK_CSM_OWNER = LAG(s.SK_CSM_OWNER) OVER (
                  PARTITION BY s.SK_COMPANY ORDER BY s.EFFECTIVE_START_DATE)
@@ -234,7 +149,6 @@ run_pass1_grp AS (
     FROM run_pass1_flag f
 ),
 runs_pass1 AS (
-    -- Consecutive same-owner versions collapsed into one contiguous run.
     SELECT
         SK_COMPANY,
         SK_CSM_OWNER,
@@ -244,15 +158,14 @@ runs_pass1 AS (
     GROUP BY SK_COMPANY, SK_CSM_OWNER, run_grp
 ),
 runs_kept AS (
-    -- Suppress blip runs (under 24h elapsed). Open/current runs always kept.
+    -- Drop blip runs. Hours, not DATEDIFF('day'): a ~12h run crossing midnight
+    -- returns day-diff 1 and would survive. Open/current runs always kept.
     SELECT *
     FROM runs_pass1
     WHERE run_end > (SELECT relevant_date FROM params)
        OR DATEDIFF('hour', run_start, run_end) >= 24
 ),
 run_pass2_flag AS (
-    -- Pass 2: re-collapse after blip removal so same-owner runs separated only
-    -- by a suppressed blip merge into one continuous period.
     SELECT k.*,
         CASE WHEN k.SK_CSM_OWNER = LAG(k.SK_CSM_OWNER) OVER (
                  PARTITION BY k.SK_COMPANY ORDER BY k.run_start)
@@ -276,9 +189,8 @@ ownership_runs AS (
     GROUP BY SK_COMPANY, SK_CSM_OWNER, run_grp2
 ),
 ownership_periods AS (
-    -- One row per real ownership period. PERIOD_ID is the single join key for
-    -- every metric CTE below, so multiple periods per TSM x company cannot
-    -- fan out the metric joins.
+    -- PERIOD_ID is the single join key for every metric CTE, so multiple periods
+    -- per TSM x company cannot fan out the metric joins.
     SELECT
         HASH(r.SK_CSM_OWNER, r.SK_COMPANY, r.run_start) AS PERIOD_ID,
         r.SK_CSM_OWNER,
@@ -288,15 +200,11 @@ ownership_periods AS (
         cp.LIFECYCLE_STAGE,
         cp.CUSTOMER_INTERNAL_TIER,
         t.HIRE_DATE,
-        -- ASSIGNED_DATE is floored by three rules, whichever is latest:
-        --   the CRM run start, the owner's hire date, and the date the company
-        --   became a customer. The latter two correct impossible CRM states.
+        -- Latest of: CRM run start, hire date, customer conversion. The latter
+        -- two correct impossible CRM states.
         GREATEST(r.run_start,
                  t.HIRE_DATE::TIMESTAMP,
-                 bc.BECAME_CUSTOMER_AT) AS ASSIGNED_DATE,
-        -- Which rule set ASSIGNED_DATE. Only 'crm_event' dates are findable in
-        -- HubSpot's CS Owner change history; the other two are derived
-        -- corrections, so their dates will not appear there.
+                 COALESCE(bc.BECAME_CUSTOMER_AT, r.run_start)) AS ASSIGNED_DATE,
         CASE
             WHEN bc.BECAME_CUSTOMER_AT >= GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP)
                  AND bc.BECAME_CUSTOMER_AT > r.run_start          THEN 'customer_conversion'
@@ -304,8 +212,7 @@ ownership_periods AS (
             ELSE 'crm_event'
         END AS ASSIGNED_DATE_SOURCE,
         LEAST(r.run_end, (SELECT relevant_date FROM params)) AS LEFT_DATE,
-        -- At most one period per company can be live: the run is still open
-        -- AND this owner is the current owner in DIM_COMPANY.
+        -- At most one period per company can be live.
         (r.run_end > (SELECT relevant_date FROM params)
          AND cp.CURRENT_OWNER = r.SK_CSM_OWNER) AS IS_CURRENT_CS
     FROM ownership_runs r
@@ -313,24 +220,22 @@ ownership_periods AS (
         ON t.SK_EMPLOYEE = r.SK_CSM_OWNER
     INNER JOIN customer_pool cp
         ON cp.SK_COMPANY = r.SK_COMPANY
-    INNER JOIN company_became_customer bc
+    LEFT JOIN company_became_customer bc
         ON bc.SK_COMPANY = r.SK_COMPANY
-    -- Period must overlap the reporting window, start after the hire date, and
-    -- extend past the customer conversion (pre-conversion ownership is not CS
-    -- ownership at all).
-    WHERE GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP, bc.BECAME_CUSTOMER_AT) <= (SELECT relevant_date FROM params)
+    -- Period must overlap the window, and extend past both the hire date and
+    -- the conversion date. Companies with no conversion date get no such floor.
+    WHERE GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP, COALESCE(bc.BECAME_CUSTOMER_AT, r.run_start)) <= (SELECT relevant_date FROM params)
       AND r.run_end > t.HIRE_DATE::TIMESTAMP
-      AND r.run_end > bc.BECAME_CUSTOMER_AT
+      AND r.run_end > COALESCE(bc.BECAME_CUSTOMER_AT, r.run_start)
 ),
 -- ---------- metrics, all keyed on PERIOD_ID ----------
 arr_and_tier_at_dates AS (
-    -- TIER_AT_ASSIGNMENT and ARR at both dates share the same point-in-time
-    -- SCD lookups, so they are resolved together rather than scanning
-    -- DIM_COMPANY_SCD twice more.
+    -- Tier and ARR share the same point-in-time SCD lookups, so they are
+    -- resolved together rather than scanning DIM_COMPANY_SCD twice more.
     SELECT
         f.PERIOD_ID,
         COALESCE(arr_start.ARR, 0) AS ARR_AT_ASSIGNMENT,
-        -- Churned companies report 0 at end regardless of the SCD value
+        -- Churned companies report 0 regardless of the SCD value
         CASE
             WHEN f.LIFECYCLE_STAGE = 'Churn' THEN 0
             ELSE COALESCE(arr_end.ARR, 0)
@@ -347,9 +252,8 @@ arr_and_tier_at_dates AS (
         AND f.LEFT_DATE < COALESCE(arr_end.EFFECTIVE_END_DATE, '9999-12-31')
 ),
 logins_at_dates AS (
-    -- Cumulative distinct users as of each date. No lower bound: these are
-    -- all-time totals, not period totals. COUNT(DISTINCT ...) does not
-    -- subtract cleanly - the difference is NET user growth.
+    -- Cumulative, so COUNT(DISTINCT) does not subtract cleanly: the difference
+    -- between the two is NET user growth, not new users.
     SELECT
         f.PERIOD_ID,
         COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= f.ASSIGNED_DATE::DATE
@@ -365,8 +269,6 @@ logins_at_dates AS (
     GROUP BY f.PERIOD_ID
 ),
 ai_at_dates AS (
-    -- Cumulative AI events as of each date. Additive, so events DURING the
-    -- period = AI_EVENTS_AT_LEFT - AI_EVENTS_AT_ASSIGNMENT.
     SELECT
         f.PERIOD_ID,
         SUM(CASE WHEN ai._FACT_DATE <= f.ASSIGNED_DATE
@@ -382,7 +284,7 @@ ai_at_dates AS (
     GROUP BY f.PERIOD_ID
 ),
 company_first_ai_date AS (
-    -- All-time first AI usage date per company (no period restriction)
+    -- All-time per company, deliberately not period-scoped.
     SELECT
         com.SK_COMPANY,
         MIN(ai._FACT_DATE) AS FIRST_AI_USAGE_DATE
@@ -393,8 +295,7 @@ company_first_ai_date AS (
     GROUP BY com.SK_COMPANY
 ),
 gong_calls AS (
-    -- IN-WINDOW count (not a cumulative pair): calls made between
-    -- ASSIGNED_DATE and LEFT_DATE where this TSM is the owner.
+    -- In-window, not a cumulative pair.
     SELECT
         f.PERIOD_ID,
         COUNT(DISTINCT fc.SK_CONVERSATION) AS GONG_CALLS
@@ -410,8 +311,6 @@ gong_calls AS (
     GROUP BY f.PERIOD_ID
 ),
 self_service_at_dates AS (
-    -- Cumulative self-service runs as of each date. Additive, so runs DURING
-    -- the period = SELF_SERVICE_RUNS_AT_LEFT - SELF_SERVICE_RUNS_AT_ASSIGNMENT.
     SELECT
         f.PERIOD_ID,
         SUM(CASE WHEN ar._FACT_DATE <= f.ASSIGNED_DATE
@@ -428,11 +327,9 @@ self_service_at_dates AS (
     GROUP BY f.PERIOD_ID
 ),
 integration_types_at_dates AS (
-    -- Distinct integration TYPES live on each date: created on/before the date
-    -- and not deleted by then. Types, not instances - one type can hold many
-    -- connections (Bell Canada has 15 gitlab-v2), which is one capability, not
-    -- fifteen. Uses _DELETED_TIMESTAMP_UTC for point-in-time state rather than
-    -- the current _IS_DELETED flag.
+    -- Types, not instances: one type can hold many connections, which is one
+    -- capability rather than many. Uses _DELETED_TIMESTAMP_UTC for
+    -- point-in-time state, not the current _IS_DELETED flag.
     SELECT
         f.PERIOD_ID,
         COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
@@ -451,8 +348,7 @@ integration_types_at_dates AS (
     GROUP BY f.PERIOD_ID
 ),
 company_first_license AS (
-    -- Only used for CUSTOMER_AGE_MONTHS. Licence and seat-utilization columns
-    -- are no longer exposed.
+    -- Only used for CUSTOMER_AGE_MONTHS.
     SELECT SK_COMPANY, MIN(START_DATE) AS FIRST_LICENSE_DATE
     FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
     WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
@@ -468,18 +364,11 @@ SELECT
     f.COMPANY_CRM_ID,
     f.COMPANY_NAME,
     fl.FIRST_LICENSE_DATE,
-    -- Elapsed months, not DATEDIFF('month'), for the same boundary-crossing
-    -- reason as MONTHS_OWNED below. Negative values are meaningful: they mark
-    -- pre-contract ownership, where the TSM held the account before it had a
-    -- licence, so FIRST_LICENSE_DATE falls after LEFT_DATE.
+    -- Negative marks pre-contract ownership: the licence starts after LEFT_DATE.
     ROUND(DATEDIFF('day', fl.FIRST_LICENSE_DATE, f.LEFT_DATE) / 30.44, 1) AS CUSTOMER_AGE_MONTHS,
     f.ASSIGNED_DATE,
     f.ASSIGNED_DATE_SOURCE,
     f.LEFT_DATE,
-    -- Elapsed months, not DATEDIFF('month'): DATEDIFF counts calendar-boundary
-    -- crossings, so a 33-day period inside one month would report 0 while a
-    -- 2-day period spanning month end would report 1. Divided by the mean month
-    -- length and kept to one decimal so short periods stay visible.
     ROUND(DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) / 30.44, 1) AS MONTHS_OWNED,
     at.TIER_AT_ASSIGNMENT,
     at.ARR_AT_ASSIGNMENT,
@@ -496,11 +385,7 @@ SELECT
     COALESCE(ai.AI_EVENTS_AT_LEFT, 0)       AS AI_EVENTS_AT_LEFT,
     cfa.FIRST_AI_USAGE_DATE,
     COALESCE(gc.GONG_CALLS, 0) AS GONG_CALLS,
-    -- Gong call targets per tier (annualized, prorated to the period):
-    --   Strategic : 48 calls/year
-    --   Core+     : 36 calls/year
-    --   Core      : 9 calls/year
-    --   Digital   : no target defined
+    -- Tier targets per year: Strategic 48, Core+ 36, Core 9, Digital none.
     ROUND(
         DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) / 365.0 *
         CASE at.TIER_AT_ASSIGNMENT
@@ -514,9 +399,6 @@ SELECT
     COALESCE(ss.SELF_SERVICE_RUNS_AT_LEFT, 0)       AS SELF_SERVICE_RUNS_AT_LEFT,
     iad.INTEGRATION_TYPES_AT_ASSIGNMENT,
     iad.INTEGRATION_TYPES_AT_LEFT,
-    -- TRUE only on the company's live ownership period. At most one row per
-    -- company can be TRUE. Computed in ownership_periods so the WHERE clause
-    -- below can filter on it.
     f.IS_CURRENT_CS
 FROM tsm_employees t
 LEFT JOIN ownership_periods f
