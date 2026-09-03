@@ -58,17 +58,13 @@ customer_pool AS (
     FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
     WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')
 ),
-company_became_customer AS (
-    -- Transactional conversion date, used to floor ASSIGNED_DATE. Deliberately
-    -- NOT from LIFECYCLE_STAGE, which is manually maintained and unreliable both
-    -- ways: a rep can assign a CS owner days before flipping the stage, and the
-    -- pre-2024 SCD carries junk stage history (oligosecurity.io reads 'Customer'
-    -- from 2022-12-07 against a first won deal of 2025-09-29).
-    -- Falls back to first licence start, which trails the won deal by ~13 days.
-    -- One owned company has neither and so gets no floor.
+company_contract_dates AS (
+    -- Contract facts per company, shared by the conversion floor and
+    -- CUSTOMER_AGE_MONTHS so the underlying tables are scanned once.
     SELECT
         c.SK_COMPANY,
-        COALESCE(w.first_won, l.first_lic)::TIMESTAMP AS BECAME_CUSTOMER_AT
+        w.first_won,
+        l.first_lic
     FROM (SELECT SK_COMPANY FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
           WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')) c
     LEFT JOIN (
@@ -84,6 +80,19 @@ company_became_customer AS (
           AND DATEDIFF(day, START_DATE, END_DATE) > 1
         GROUP BY SK_COMPANY
     ) l ON l.SK_COMPANY = c.SK_COMPANY
+),
+company_became_customer AS (
+    -- Transactional conversion date, used to floor ASSIGNED_DATE. Deliberately
+    -- NOT from LIFECYCLE_STAGE, which is manually maintained and unreliable both
+    -- ways: a rep can assign a CS owner days before flipping the stage, and the
+    -- pre-2024 SCD carries junk stage history (oligosecurity.io reads 'Customer'
+    -- from 2022-12-07 against a first won deal of 2025-09-29).
+    -- Falls back to first licence start, which trails the won deal by ~13 days.
+    -- One owned company has neither and so gets no floor.
+    SELECT
+        SK_COMPANY,
+        COALESCE(first_won, first_lic)::TIMESTAMP AS BECAME_CUSTOMER_AT
+    FROM company_contract_dates
 ),
 tsm_employees AS (
     SELECT
@@ -105,6 +114,11 @@ company_org_map AS (
     -- (SK_COMPANY, SK_ACCOUNT, SK_ORG), which the metric SUMs depend on.
     -- IS_ACTIVE_LIFECYCLE is a flag, not a filter: the login/self-service/AI
     -- CTEs require it, integrations do not.
+    -- Prefers commercial accounts, but falls back to ALL accounts for companies
+    -- that have none flagged commercial. 34 customers (16 of them owned) are in
+    -- that state despite having real activity - Wisconsin and Banner Health
+    -- carry thousands of logins - and filtering on the flag alone dropped them
+    -- from every org-based metric.
     SELECT
         da.SK_COMPANY,
         da.SK_ACCOUNT,
@@ -116,6 +130,9 @@ company_org_map AS (
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
         ON dc_lc.SK_COMPANY = da.SK_COMPANY
     WHERE da.IS_COMMERCIAL_ACCOUNT = TRUE
+       OR NOT EXISTS (SELECT 1 FROM PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da2
+                      WHERE da2.SK_COMPANY = da.SK_COMPANY
+                        AND da2.IS_COMMERCIAL_ACCOUNT = TRUE)
 ),
 -- ---------- ownership periods (gaps-and-islands over the SCD) ----------
 -- The SCD is heavily fragmented (one company can carry hundreds of versions),
@@ -230,8 +247,7 @@ ownership_periods AS (
 ),
 -- ---------- metrics, all keyed on PERIOD_ID ----------
 arr_and_tier_at_dates AS (
-    -- Tier and ARR share the same point-in-time SCD lookups, so they are
-    -- resolved together rather than scanning DIM_COMPANY_SCD twice more.
+    -- ARR at both dates from point-in-time SCD lookups.
     SELECT
         f.PERIOD_ID,
         COALESCE(arr_start.ARR, 0) AS ARR_AT_ASSIGNMENT,
@@ -239,8 +255,7 @@ arr_and_tier_at_dates AS (
         CASE
             WHEN f.LIFECYCLE_STAGE = 'Churn' THEN 0
             ELSE COALESCE(arr_end.ARR, 0)
-        END AS ARR_AT_END_DATE,
-        arr_start.CUSTOMER_INTERNAL_TIER AS TIER_AT_ASSIGNMENT
+        END AS ARR_AT_END_DATE
     FROM ownership_periods f
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD arr_start
         ON f.SK_COMPANY = arr_start.SK_COMPANY
@@ -250,6 +265,26 @@ arr_and_tier_at_dates AS (
         ON f.SK_COMPANY = arr_end.SK_COMPANY
         AND f.LEFT_DATE >= arr_end.EFFECTIVE_START_DATE
         AND f.LEFT_DATE < COALESCE(arr_end.EFFECTIVE_END_DATE, '9999-12-31')
+),
+tier_at_assignment AS (
+    -- Most recent stable, non-NULL tier at or before the assignment lookup
+    -- point. A plain point-in-time read is unsafe: tier churns during pipeline
+    -- writes. Grupo Credito S.A. shows Core for hours, flips to Digital for 3
+    -- SECONDS, goes NULL for 13 hours, then returns to Core - so a naive read
+    -- returns either NULL or the 3-second Digital blip instead of Core.
+    -- Versions under 60s are excluded for the same reason blip runs are.
+    SELECT
+        f.PERIOD_ID,
+        s.CUSTOMER_INTERNAL_TIER AS TIER_AT_ASSIGNMENT
+    FROM ownership_periods f
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD s
+        ON s.SK_COMPANY = f.SK_COMPANY
+        AND s.EFFECTIVE_START_DATE <= DATEADD(day, 1, f.ASSIGNED_DATE::DATE)::TIMESTAMP
+        AND s.CUSTOMER_INTERNAL_TIER IS NOT NULL
+        AND DATEDIFF('second', s.EFFECTIVE_START_DATE,
+                     COALESCE(s.EFFECTIVE_END_DATE, (SELECT relevant_date FROM params))) >= 60
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY f.PERIOD_ID ORDER BY s.EFFECTIVE_START_DATE DESC) = 1
 ),
 logins_at_dates AS (
     -- Cumulative, so COUNT(DISTINCT) does not subtract cleanly: the difference
@@ -348,12 +383,12 @@ integration_types_at_dates AS (
     GROUP BY f.PERIOD_ID
 ),
 company_first_license AS (
-    -- Only used for CUSTOMER_AGE_MONTHS.
-    SELECT SK_COMPANY, MIN(START_DATE) AS FIRST_LICENSE_DATE
-    FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
-    WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
-      AND TOTAL_LICENSED_USERS > 0
-    GROUP BY SK_COMPANY
+    -- Used for CUSTOMER_AGE_MONTHS. Falls back to the first won deal when there
+    -- is no licence record, so age is still measurable from the contract date.
+    SELECT
+        SK_COMPANY,
+        COALESCE(first_lic, first_won) AS FIRST_LICENSE_DATE
+    FROM company_contract_dates
 )
 SELECT
     t.DISPLAY_NAME,
@@ -370,7 +405,7 @@ SELECT
     f.ASSIGNED_DATE_SOURCE,
     f.LEFT_DATE,
     ROUND(DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) / 30.44, 1) AS MONTHS_OWNED,
-    at.TIER_AT_ASSIGNMENT,
+    ta.TIER_AT_ASSIGNMENT,
     at.ARR_AT_ASSIGNMENT,
     at.ARR_AT_END_DATE,
     CASE
@@ -388,7 +423,7 @@ SELECT
     -- Tier targets per year: Strategic 48, Core+ 36, Core 9, Digital none.
     ROUND(
         DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) / 365.0 *
-        CASE at.TIER_AT_ASSIGNMENT
+        CASE ta.TIER_AT_ASSIGNMENT
             WHEN 'Strategic' THEN 48
             WHEN 'Core+'     THEN 36
             WHEN 'Core'      THEN 9
@@ -405,6 +440,8 @@ LEFT JOIN ownership_periods f
     ON t.SK_EMPLOYEE = f.SK_CSM_OWNER
 LEFT JOIN arr_and_tier_at_dates at
     ON f.PERIOD_ID = at.PERIOD_ID
+LEFT JOIN tier_at_assignment ta
+    ON f.PERIOD_ID = ta.PERIOD_ID
 LEFT JOIN logins_at_dates lod
     ON f.PERIOD_ID = lod.PERIOD_ID
 LEFT JOIN ai_at_dates ai
