@@ -1,127 +1,152 @@
-
 -- ============================================================
--- TSM SCORECARD V2 — Company-Level Assignment Metrics
+-- TSM SCORECARD V2 - Ownership-Period Metrics
 -- ============================================================
 --
 -- PURPOSE:
---   One row per TSM × Company assignment showing key success metrics
---   for the period the TSM owned the company.
+--   One row per TSM x Company OWNERSHIP PERIOD, showing success metrics for
+--   exactly the span the TSM held that company. A TSM who lost an account and
+--   later regained it gets TWO rows, one per period; IS_CURRENT_CS marks the
+--   live one. At most one row per company can be IS_CURRENT_CS.
 --
--- SCOPE (who is included):
---   - TSMs: DIM_EMPLOYEE where TITLE contains TSM, Technical Success Manager,
---           or Solution Architect; hired on or before relevant_date.
---   - Only TSMs who are CURRENTLY assigned to at least one active customer
---     (current_cs_owners via DIM_COMPANY where LIFECYCLE_STAGE = 'Customer').
+-- PIPELINE (in order):
+--   1.  params                     - snapshot date
+--   2.  cs_owner_pool              - every CS owner in DIM_COMPANY
+--   3.  customer_pool              - Customer/Churn companies + tier + owner
+--   4.  tsm_employees              - the owner roster (hire dates)
+--   5.  scd_owners -> ownership_periods
+--                                  - SCD collapsed into ownership periods
+--   6.  arr_and_tier_at_dates      - TIER_AT_ASSIGNMENT + ARR at both dates
+--   7.  logins_at_dates            - cumulative unique logins at both dates
+--   8.  ai_at_dates                - cumulative AI events at both dates
+--   9.  company_first_ai_date      - all-time FIRST_AI_USAGE_DATE
+--   10. gong_calls                 - calls made DURING the period
+--   11. self_service_at_dates      - cumulative self-service runs at both dates
+--   12. integration_types_at_dates - live integration types at both dates
+--   13. final SELECT               - derived columns + 14-day filter
+--
+-- OWNERSHIP PERIOD DETECTION (gaps-and-islands over DIM_COMPANY_SCD):
+--   The SCD is heavily fragmented - one company can carry hundreds of versions
+--   (cyberark alone has ~293 since Aug 2025), so an SCD version is NOT an
+--   assignment. Versions are collapsed into contiguous same-owner runs:
+--     Pass 1  : collapse consecutive same-owner versions into runs.
+--     Suppress: drop runs under 24h of ELAPSED time - a different owner
+--               appearing briefly is pipeline noise, not a handoff. Hours, not
+--               DATEDIFF('day'): a ~12h run crossing midnight returns day-diff
+--               of 1 and would survive (this is how honeybook slipped through).
+--     Pass 2  : re-collapse, so two runs of the same owner separated only by a
+--               suppressed blip MERGE into one period. This handles
+--               cyberark/honeybook without special-casing, while genuine
+--               multi-day handoffs still split the timeline.
+--   Pre-2024 SCD records are excluded (unreliable historical data - the SCD
+--   reaches back to 2022-05-08, ~35k rows, predating the company).
+--   ASSIGNED_DATE is floored at the owner's hire date: a CS owner cannot own a
+--   customer before being hired, but the CRM asserts pre-hire ownership on a
+--   meaningful number of rows. ASSIGNED_DATE_FLOORED_AT_HIRE flags those, since
+--   their ASSIGNED_DATE is the hire date and will NOT appear in HubSpot's change
+--   history (HubSpot logs changes, and "was already the owner" is not a change).
+--
+-- DATE ARITHMETIC:
+--   MONTHS_OWNED and CUSTOMER_AGE_MONTHS use elapsed days / 30.44, NOT
+--   DATEDIFF('month'). DATEDIFF counts calendar-boundary crossings, not elapsed
+--   time: a 33-day period inside one month returns 0, while a 2-day period
+--   spanning month end returns 1. The same trap applies to DATEDIFF('day') and
+--   is why the blip guard above is expressed in hours.
+--   CUSTOMER_AGE_MONTHS can be NEGATIVE - that marks pre-contract ownership,
+--   where the TSM held the account before it had a licence.
+--
+-- LEFT_DATE:
+--   End of the ownership run, capped at relevant_date. For a still-open run
+--   this is relevant_date.
+--
+-- SCOPE:
+--   - Owners: DIM_EMPLOYEE where TITLE contains TSM, Technical Success Manager,
+--     or Solution Architect, hired on or before relevant_date, AND currently
+--     assigned to at least one active customer (cs_owner_pool). Note this
+--     excludes TSMs who currently own nothing (e.g. Magali Philippe, Chris
+--     Hodson, Tal Shladovsky) along with their historical periods.
 --   - Companies: LIFECYCLE_STAGE IN ('Customer', 'Churn').
 --
--- ASSIGNMENT DETECTION (how we find the assigned date):
---   1. Explicit change: SK_CSM_OWNER changed in DIM_COMPANY_SCD (LAG detection).
---   2. Inherited: TSM was already the owner before their hire date; use
---      the first SCD record on or after hire date as the assigned date.
---   - Pre-2024 SCD records are excluded (unreliable historical data).
---   - SCD versions lasting < 1 day are excluded (sub-day blips/pipeline noise).
---   - Today's pipeline SCD refreshes are excluded from inherited assignments.
---
--- LEFT_DATE (end of ownership):
---   - If the company was reassigned to a different owner: date of that change.
---   - If still assigned: CURRENT_TIMESTAMP (today).
---   - In all cases capped at relevant_date (CURRENT_TIMESTAMP).
---
--- FILTERS APPLIED TO FINAL OUTPUT:
---   - Ownership period must be > 14 days (removes brief handoffs).
---   - A license must have overlapped the ownership window. This drops
---     pre-contract ownership: cases where the TSM held the account through
---     the sales cycle and handed it off within days of the first license
---     starting (e.g. abu dhabi, StoneX, bhp, ses engineering, Wisconsin),
---     as well as companies with no license record at all.
---   - TSMs with no qualifying assignments still appear (with NULL company rows).
+-- METRIC SHAPES - read this before interpreting the columns:
+--   Cumulative pairs (*_AT_ASSIGNMENT / *_AT_LEFT) are all-time totals as of
+--   each date, with NO lower bound. They are not period totals.
+--     - AI_EVENTS and SELF_SERVICE_RUNS are additive, so activity DURING the
+--       period is recoverable as (_AT_LEFT - _AT_ASSIGNMENT).
+--     - UNIQUE_LOGINS is COUNT(DISTINCT ...), so its difference is NET user
+--       growth, not the number of new users. It does not subtract cleanly.
+--   GONG_CALLS is the exception: an in-window count of calls made between
+--   ASSIGNED_DATE and LEFT_DATE, not a cumulative pair.
 --
 -- ARR:
---   - ARR_AT_ASSIGNMENT: from DIM_COMPANY_SCD, looked up 1 day after
+--   - ARR_AT_ASSIGNMENT: from DIM_COMPANY_SCD, looked up 1 day after the
 --     assignment date to avoid intra-day blips.
---   - ARR_AT_END_DATE: from DIM_COMPANY_SCD at LEFT_DATE.
---     For churned companies (LIFECYCLE_STAGE = 'Churn'): forced to 0.
+--   - ARR_AT_END_DATE: from DIM_COMPANY_SCD at LEFT_DATE. For churned companies
+--     (LIFECYCLE_STAGE = 'Churn') this is forced to 0, so a churned account
+--     reports 0 rather than its last contract value.
 --
 -- GONG CALLS:
---   - Completed calls > 10 minutes where TSM is listed as owner.
---   - Targets (annualized, prorated by ownership days):
+--   Completed calls over 10 minutes where the TSM is listed as owner.
+--   Targets (annualized, prorated by period length):
 --     Strategic 48/yr, Core+ 36/yr, Core 9/yr, Digital N/A.
 --
--- SELF-SERVICE ACTIONS:
---   - Only TRIGGER_TYPE = 'self-service' from FACT_ACTION_RUNS.
---   - Monthly rate = total / (days_owned / 30).
---
--- LICENSED USERS:
---   - First non-zero license from FACT_PURCHASED_SEATS active at any
---     point during the ownership window (ASSIGNED_DATE to LEFT_DATE).
---   - Duration filter: license must last > 1 day.
---
--- LOGINS:
---   - Distinct user emails who logged in between ASSIGNED_DATE and LEFT_DATE.
---
--- AI EVENTS:
---   - SUM of NUMBER_OF_EVENTS from FACT_AI_USAGE between ASSIGNED_DATE and LEFT_DATE.
---   - FIRST_AI_USAGE_DATE: All-time earliest AI usage date per company (no window).
---
--- SEAT UTILIZATION:
---   - LICENSES_AT_ASSIGNMENT / LICENSES_AT_LEFT: seats in force on each date
---     (point-in-time; NULL when no license was active on that date).
---   - UNIQUE_LOGINS_AT_ASSIGNMENT / UNIQUE_LOGINS_AT_LEFT: all-time cumulative
---     distinct users as of each date. The difference is net new users.
---   - SEAT_UTILIZATION_AT_ASSIGNMENT / SEAT_UTILIZATION_AT_LEFT: each pair
---     divided at its own point in time, so numerator and denominator always
---     match. NULL when no license was in force on that date.
---
 -- INTEGRATIONS:
---   - INTEGRATION_TYPES_AT_ASSIGNMENT / INTEGRATION_TYPES_AT_LEFT: distinct
---     integration types (data inputs) live on each date. This is the adoption
---     breadth measure - prefer it over the instance counts.
---   - INTEGRATIONS_AT_ASSIGNMENT / INTEGRATIONS_AT_LEFT: raw instance counts.
---     Much higher than the type counts because one type can have many
---     connections (Bell Canada: 7 types across 41 instances, 15 of them
---     gitlab-v2), so instances overstate breadth of adoption.
---   - "Live on a date" = created on/before it and not deleted by then, via
---     _DELETED_TIMESTAMP_UTC rather than the current _IS_DELETED flag, so
---     integrations removed later still count at the historical date.
+--   INTEGRATION_TYPES_AT_ASSIGNMENT / _AT_LEFT: distinct integration types
+--   (data inputs) live on each date - the adoption BREADTH measure. "Live on a
+--   date" uses _DELETED_TIMESTAMP_UTC rather than the current _IS_DELETED flag,
+--   so integrations removed later still count at the historical date.
+--   Raw instance counts are deliberately not exposed: one type can have many
+--   connections (Bell Canada: 7 types across 41 instances, 15 of them
+--   gitlab-v2), so instances overstate breadth.
 --
---   NO PASS/FAIL SCORE. A tier/age threshold column was built and removed:
---   utilization can't be scored fairly when the license changes mid-ownership.
---     - Seats at LEFT_DATE penalizes upselling: 540 users on 600 seats = 90%
---       (pass); upsell to 800 and the same users score 68% (fail).
---     - Seats at ASSIGNED_DATE avoids that but goes stale, ignoring seats added
---       later. Affects 35/124 rows, license grew in all - always flattering.
---   Both endpoints are exposed instead, so the license change stays visible:
---   comparing the two shows whether an upsell occurred during ownership, and
---   utilization can be read as a trajectory rather than a single verdict.
+-- FILTERS APPLIED TO FINAL OUTPUT:
+--   - Historical periods must exceed 14 days (removes brief handoffs).
+--     CURRENT periods are exempt, so a live assignment always appears
+--     regardless of tenure.
+--   - No license requirement. The old "a license must have overlapped the
+--     ownership window" filter was removed, so companies with no license
+--     record still appear (e.g. MSD, whose only FACT_PURCHASED_SEATS row has
+--     NULL start/end dates). This also means pre-contract periods are no
+--     longer suppressed; under the period model they surface as separate
+--     historical rows rather than corrupting the current one.
+--   - TSMs with no qualifying periods still appear (with NULL company rows).
+--
+-- NO PASS/FAIL SCORE, AND NO SEAT UTILIZATION. Licence and seat-utilization
+--   columns were removed. Utilization could not be scored fairly when the
+--   licence changed mid-ownership: seats at LEFT_DATE penalizes upselling
+--   (540 users on 600 seats = 90% pass; upsell to 800 and the same users score
+--   68% fail), while seats at ASSIGNED_DATE goes stale and ignores seats added
+--   later. UNIQUE_LOGINS_AT_* is retained as the raw adoption signal.
 -- ============================================================
 
--- Find company-level CS owner assignments for each TSM
--- Shows when each TSM was first assigned to each company (customers only)
--- Uses SCD table with LAG to detect when SK_CSM_OWNER changed
 WITH params AS (
-    -- Snapshot date for this scorecard run. Defaults to now for live use.
-    -- For a point-in-time snapshot replace CURRENT_TIMESTAMP() with a literal:
+    -- Snapshot date: last second of the previous calendar month (dynamic).
+    -- To pin to a specific point in time, replace with a literal, e.g.:
     --   End of last full quarter : '2026-06-30 23:59:59'::TIMESTAMP
-    --   End of last full month   : '2026-08-31 23:59:59'::TIMESTAMP
-    SELECT CURRENT_TIMESTAMP() AS relevant_date
+    SELECT DATEADD('second', -1, DATE_TRUNC('month', CURRENT_DATE()))::TIMESTAMP AS relevant_date
 ),
-current_cs_owners AS (
-    -- CS owners currently assigned to at least one active customer
+cs_owner_pool AS (
+    -- The full CS owner pool: everyone currently assigned to at least one
+    -- active customer. Gates the roster below.
     SELECT DISTINCT SK_CSM_OWNER
     FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
     WHERE LIFECYCLE_STAGE = 'Customer'
       AND SK_CSM_OWNER IS NOT NULL
 ),
-cs_owners_for_customers AS (
-    -- Get all CS owners who ever owned a customer company (current or historical)
-    SELECT DISTINCT scd.SK_CSM_OWNER
-    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD scd
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp ON comp.SK_COMPANY = scd.SK_COMPANY
-    WHERE comp.LIFECYCLE_STAGE = 'Customer'
-      AND scd.SK_CSM_OWNER IS NOT NULL
+customer_pool AS (
+    -- The customer pool: one row per company, carrying tier, lifecycle and the
+    -- CURRENT owner. Single source for the tier lookup and churn ARR override.
+    SELECT
+        SK_COMPANY,
+        COMPANY_CRM_ID,
+        COMPANY_NAME,
+        LIFECYCLE_STAGE,
+        CUSTOMER_INTERNAL_TIER,
+        SK_CSM_OWNER AS CURRENT_OWNER
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
+    WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')
 ),
 tsm_employees AS (
-    SELECT 
+    -- Owner roster with hire dates.
+    SELECT
         e.SK_EMPLOYEE,
         e.EMPLOYEE_ID,
         e.EMAIL,
@@ -129,433 +154,352 @@ tsm_employees AS (
         e.TITLE,
         e.ORIGINAL_START_DATE AS HIRE_DATE
     FROM PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE e
-    JOIN current_cs_owners cs ON cs.SK_CSM_OWNER = e.SK_EMPLOYEE
+    JOIN cs_owner_pool cs ON cs.SK_CSM_OWNER = e.SK_EMPLOYEE
     WHERE (e.TITLE ILIKE '%TSM%'
        OR e.TITLE ILIKE '%Technical Success Manager%'
        OR e.TITLE ILIKE '%Solution Architect%')
       AND e.ORIGINAL_START_DATE <= (SELECT relevant_date FROM params)
 ),
-company_csm_changes AS (
-    SELECT 
+company_org_map AS (
+    -- Shared company -> account -> org mapping, built once instead of repeated
+    -- in every metric CTE. Grain is one row per (SK_COMPANY, SK_ACCOUNT,
+    -- SK_ORG), so SUM/COUNT fan-out matches the original inline joins.
+    -- IS_ACTIVE_LIFECYCLE carries the lifecycle filter as a flag: the
+    -- login/self-service/AI CTEs require it, integrations do not.
+    SELECT
+        da.SK_COMPANY,
+        da.SK_ACCOUNT,
+        do.SK_ORG,
+        (dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')) AS IS_ACTIVE_LIFECYCLE
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
+        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
+        ON dc_lc.SK_COMPANY = da.SK_COMPANY
+    WHERE da.IS_COMMERCIAL_ACCOUNT = TRUE
+),
+-- ---------- ownership period detection (gaps-and-islands) ----------
+scd_owners AS (
+    -- Raw SCD ownership versions in scope. Individual versions are NOT
+    -- assignments; they are collapsed into runs below.
+    SELECT
         scd.SK_COMPANY,
-        scd.COMPANY_CRM_ID,
-        scd.COMPANY_NAME,
         scd.SK_CSM_OWNER,
         scd.EFFECTIVE_START_DATE,
-        scd.EFFECTIVE_END_DATE,
-        scd.IS_LATEST_VERSION,
-        -- LAG over ALL SCD records (not just current owners) to detect real transitions
-        LAG(scd.SK_CSM_OWNER) OVER (
-            PARTITION BY scd.SK_COMPANY 
-            ORDER BY scd.EFFECTIVE_START_DATE
-        ) AS PREV_CSM_OWNER
+        COALESCE(scd.EFFECTIVE_END_DATE, '9999-12-31'::TIMESTAMP) AS EFFECTIVE_END_DATE
     FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD scd
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp 
-        ON comp.SK_COMPANY = scd.SK_COMPANY
-        AND comp.LIFECYCLE_STAGE IN ('Customer', 'Churn')
+    INNER JOIN customer_pool cp
+        ON cp.SK_COMPANY = scd.SK_COMPANY
     WHERE scd.SK_CSM_OWNER IS NOT NULL
+      AND scd.EFFECTIVE_START_DATE >= '2024-01-01'  -- Pre-2024 history is unreliable
 ),
-first_assignment AS (
-    SELECT 
-        c.SK_CSM_OWNER,
-        c.SK_COMPANY,
-        c.COMPANY_CRM_ID,
-        c.COMPANY_NAME,
-        c.EFFECTIVE_START_DATE AS ASSIGNED_DATE,
+run_pass1_flag AS (
+    -- Pass 1: mark where the owner actually changes.
+    SELECT s.*,
+        CASE WHEN s.SK_CSM_OWNER = LAG(s.SK_CSM_OWNER) OVER (
+                 PARTITION BY s.SK_COMPANY ORDER BY s.EFFECTIVE_START_DATE)
+             THEN 0 ELSE 1 END AS is_new_run
+    FROM scd_owners s
+),
+run_pass1_grp AS (
+    SELECT f.*,
+        SUM(f.is_new_run) OVER (
+            PARTITION BY f.SK_COMPANY ORDER BY f.EFFECTIVE_START_DATE
+            ROWS UNBOUNDED PRECEDING) AS run_grp
+    FROM run_pass1_flag f
+),
+runs_pass1 AS (
+    -- Consecutive same-owner versions collapsed into one contiguous run.
+    SELECT
+        SK_COMPANY,
+        SK_CSM_OWNER,
+        MIN(EFFECTIVE_START_DATE) AS run_start,
+        MAX(EFFECTIVE_END_DATE)   AS run_end
+    FROM run_pass1_grp
+    GROUP BY SK_COMPANY, SK_CSM_OWNER, run_grp
+),
+runs_kept AS (
+    -- Suppress blip runs (under 24h elapsed). Open/current runs always kept.
+    SELECT *
+    FROM runs_pass1
+    WHERE run_end > (SELECT relevant_date FROM params)
+       OR DATEDIFF('hour', run_start, run_end) >= 24
+),
+run_pass2_flag AS (
+    -- Pass 2: re-collapse after blip removal so same-owner runs separated only
+    -- by a suppressed blip merge into one continuous period.
+    SELECT k.*,
+        CASE WHEN k.SK_CSM_OWNER = LAG(k.SK_CSM_OWNER) OVER (
+                 PARTITION BY k.SK_COMPANY ORDER BY k.run_start)
+             THEN 0 ELSE 1 END AS is_new_run2
+    FROM runs_kept k
+),
+run_pass2_grp AS (
+    SELECT f.*,
+        SUM(f.is_new_run2) OVER (
+            PARTITION BY f.SK_COMPANY ORDER BY f.run_start
+            ROWS UNBOUNDED PRECEDING) AS run_grp2
+    FROM run_pass2_flag f
+),
+ownership_runs AS (
+    SELECT
+        SK_COMPANY,
+        SK_CSM_OWNER,
+        MIN(run_start) AS run_start,
+        MAX(run_end)   AS run_end
+    FROM run_pass2_grp
+    GROUP BY SK_COMPANY, SK_CSM_OWNER, run_grp2
+),
+ownership_periods AS (
+    -- One row per real ownership period. PERIOD_ID is the single join key for
+    -- every metric CTE below, so multiple periods per TSM x company cannot
+    -- fan out the metric joins.
+    SELECT
+        HASH(r.SK_CSM_OWNER, r.SK_COMPANY, r.run_start) AS PERIOD_ID,
+        r.SK_CSM_OWNER,
+        r.SK_COMPANY,
+        cp.COMPANY_CRM_ID,
+        cp.COMPANY_NAME,
+        cp.LIFECYCLE_STAGE,
+        cp.CUSTOMER_INTERNAL_TIER,
         t.HIRE_DATE,
-        ROW_NUMBER() OVER (
-            PARTITION BY c.SK_CSM_OWNER, c.SK_COMPANY 
-            ORDER BY c.EFFECTIVE_START_DATE
-        ) AS assignment_rank
-    FROM company_csm_changes c
-    INNER JOIN tsm_employees t ON c.SK_CSM_OWNER = t.SK_EMPLOYEE
-    WHERE c.EFFECTIVE_START_DATE >= '2024-01-01'  -- Exclude pre-2024 assignments (unreliable historical data)
-      AND DATEDIFF('day', c.EFFECTIVE_START_DATE, COALESCE(c.EFFECTIVE_END_DATE, CURRENT_TIMESTAMP)) >= 1  -- Min 1 day duration
-      AND (
-        (
-            -- Historical assignments: explicit LAG-detected owner change
-            (c.SK_CSM_OWNER != COALESCE(c.PREV_CSM_OWNER, '') OR c.PREV_CSM_OWNER IS NULL)
-            AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
-            AND c.EFFECTIVE_START_DATE <= (SELECT relevant_date FROM params)
-        ) OR (
-            -- Inherited assignments: TSM owned this company before their hire date
-            -- No LAG change exists after hire; pick first post-hire SCD record (ROW_NUMBER takes earliest)
-            c.PREV_CSM_OWNER = c.SK_CSM_OWNER  -- Owner didn't change in this SCD version
-            AND c.EFFECTIVE_START_DATE >= t.HIRE_DATE
-            AND c.EFFECTIVE_START_DATE::DATE < CURRENT_DATE()  -- Exclude today's pipeline refreshes
-        )
-      )
+        GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP) AS ASSIGNED_DATE,
+        -- TRUE when the CRM claims ownership starting before the owner's hire
+        -- date, so ASSIGNED_DATE above is the hire date rather than a real CRM
+        -- event. Such a date will NOT be findable in HubSpot's change history.
+        -- A CS owner cannot own a customer before being hired, so the floor is
+        -- correct - this flag just makes the correction auditable.
+        (r.run_start < t.HIRE_DATE::TIMESTAMP) AS ASSIGNED_DATE_FLOORED_AT_HIRE,
+        LEAST(r.run_end, (SELECT relevant_date FROM params)) AS LEFT_DATE,
+        -- At most one period per company can be live: the run is still open
+        -- AND this owner is the current owner in DIM_COMPANY.
+        (r.run_end > (SELECT relevant_date FROM params)
+         AND cp.CURRENT_OWNER = r.SK_CSM_OWNER) AS IS_CURRENT_CS
+    FROM ownership_runs r
+    INNER JOIN tsm_employees t
+        ON t.SK_EMPLOYEE = r.SK_CSM_OWNER
+    INNER JOIN customer_pool cp
+        ON cp.SK_COMPANY = r.SK_COMPANY
+    -- Period must overlap the reporting window and not start after it
+    WHERE GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP) <= (SELECT relevant_date FROM params)
+      AND r.run_end > t.HIRE_DATE::TIMESTAMP
 ),
-assignment_end_dates AS (
-    SELECT 
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        MIN(c2.EFFECTIVE_START_DATE) AS LEFT_DATE
-    FROM first_assignment f
-    INNER JOIN company_csm_changes c2 
-        ON f.SK_COMPANY = c2.SK_COMPANY 
-        AND c2.EFFECTIVE_START_DATE > f.ASSIGNED_DATE
-        AND c2.SK_CSM_OWNER != f.SK_CSM_OWNER
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
-),
-arr_metrics AS (
-    SELECT 
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        LEAST(
-            COALESCE(e.LEFT_DATE, (SELECT relevant_date FROM params)),
-            (SELECT relevant_date FROM params)
-        ) AS LEFT_DATE,
+-- ---------- metrics, all keyed on PERIOD_ID ----------
+arr_and_tier_at_dates AS (
+    -- TIER_AT_ASSIGNMENT and ARR at both dates share the same point-in-time
+    -- SCD lookups, so they are resolved together rather than scanning
+    -- DIM_COMPANY_SCD twice more.
+    SELECT
+        f.PERIOD_ID,
         COALESCE(arr_start.ARR, 0) AS ARR_AT_ASSIGNMENT,
-        -- If company has churned, ARR at end is 0 regardless of SCD value
-        CASE 
-            WHEN comp.LIFECYCLE_STAGE = 'Churn' THEN 0
+        -- Churned companies report 0 at end regardless of the SCD value
+        CASE
+            WHEN f.LIFECYCLE_STAGE = 'Churn' THEN 0
             ELSE COALESCE(arr_end.ARR, 0)
         END AS ARR_AT_END_DATE,
         arr_start.CUSTOMER_INTERNAL_TIER AS TIER_AT_ASSIGNMENT
-    FROM first_assignment f
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY comp ON comp.SK_COMPANY = f.SK_COMPANY
-    LEFT JOIN assignment_end_dates e
-        ON f.SK_CSM_OWNER = e.SK_CSM_OWNER
-        AND f.SK_COMPANY = e.SK_COMPANY
+    FROM ownership_periods f
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD arr_start
         ON f.SK_COMPANY = arr_start.SK_COMPANY
         AND DATEADD(day, 1, f.ASSIGNED_DATE::DATE)::TIMESTAMP >= arr_start.EFFECTIVE_START_DATE
         AND DATEADD(day, 1, f.ASSIGNED_DATE::DATE)::TIMESTAMP < COALESCE(arr_start.EFFECTIVE_END_DATE, '9999-12-31')
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD arr_end
         ON f.SK_COMPANY = arr_end.SK_COMPANY
-        AND LEAST(COALESCE(e.LEFT_DATE, (SELECT relevant_date FROM params)), (SELECT relevant_date FROM params)) >= arr_end.EFFECTIVE_START_DATE
-        AND LEAST(COALESCE(e.LEFT_DATE, (SELECT relevant_date FROM params)), (SELECT relevant_date FROM params)) < COALESCE(arr_end.EFFECTIVE_END_DATE, '9999-12-31')
-    WHERE f.assignment_rank = 1
+        AND f.LEFT_DATE >= arr_end.EFFECTIVE_START_DATE
+        AND f.LEFT_DATE < COALESCE(arr_end.EFFECTIVE_END_DATE, '9999-12-31')
 ),
-company_logins AS (
+logins_at_dates AS (
+    -- Cumulative distinct users as of each date. No lower bound: these are
+    -- all-time totals, not period totals. COUNT(DISTINCT ...) does not
+    -- subtract cleanly - the difference is NET user growth.
     SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        COUNT(DISTINCT ful.USER_EMAIL_ADDRESS) AS UNIQUE_LOGINS
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
-        ON da.SK_COMPANY = f.SK_COMPANY
-        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
-        ON dc_lc.SK_COMPANY = da.SK_COMPANY
-        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
-        ON do.SK_ACCOUNT = da.SK_ACCOUNT
+        f.PERIOD_ID,
+        COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= f.ASSIGNED_DATE::DATE
+                            THEN ful.USER_EMAIL_ADDRESS END) AS UNIQUE_LOGINS_AT_ASSIGNMENT,
+        COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= f.LEFT_DATE::DATE
+                            THEN ful.USER_EMAIL_ADDRESS END) AS UNIQUE_LOGINS_AT_LEFT
+    FROM ownership_periods f
+    INNER JOIN company_org_map com
+        ON com.SK_COMPANY = f.SK_COMPANY
+        AND com.IS_ACTIVE_LIFECYCLE
     LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
-        ON ful.SK_ORG = do.SK_ORG
-        AND ful.LOGIN_DATE >= f.ASSIGNED_DATE::DATE
-        AND ful.LOGIN_DATE <= arr.LEFT_DATE::DATE
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+        ON ful.SK_ORG = com.SK_ORG
+    GROUP BY f.PERIOD_ID
 ),
-company_self_service_runs AS (
+ai_at_dates AS (
+    -- Cumulative AI events as of each date. Additive, so events DURING the
+    -- period = AI_EVENTS_AT_LEFT - AI_EVENTS_AT_ASSIGNMENT.
     SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        SUM(ar.COUNT_SUCCEEDED + ar.COUNT_FAILED) AS TOTAL_SELF_SERVICE_RUNS
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
-        ON da.SK_COMPANY = f.SK_COMPANY
-        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
-        ON dc_lc.SK_COMPANY = da.SK_COMPANY
-        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
-        ON do.SK_ACCOUNT = da.SK_ACCOUNT
-    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_ACTION_RUNS ar
-        ON ar.SK_ORG = do.SK_ORG
-        AND ar._FACT_DATE >= f.ASSIGNED_DATE
-        AND ar._FACT_DATE <= arr.LEFT_DATE
-        AND ar.SK_ACTION IN (SELECT SK_ACTION FROM PORT_ANALYTICS_PROD.DWH.DIM_ACTION WHERE TRIGGER_TYPE = 'self-service')
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+        f.PERIOD_ID,
+        SUM(CASE WHEN ai._FACT_DATE <= f.ASSIGNED_DATE
+                 THEN ai.NUMBER_OF_EVENTS END) AS AI_EVENTS_AT_ASSIGNMENT,
+        SUM(CASE WHEN ai._FACT_DATE <= f.LEFT_DATE
+                 THEN ai.NUMBER_OF_EVENTS END) AS AI_EVENTS_AT_LEFT
+    FROM ownership_periods f
+    INNER JOIN company_org_map com
+        ON com.SK_COMPANY = f.SK_COMPANY
+        AND com.IS_ACTIVE_LIFECYCLE
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_AI_USAGE ai
+        ON ai.SK_ORG = com.SK_ORG
+    GROUP BY f.PERIOD_ID
 ),
-company_gong_calls AS (
+company_first_ai_date AS (
+    -- All-time first AI usage date per company (no period restriction)
     SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
+        com.SK_COMPANY,
+        MIN(ai._FACT_DATE) AS FIRST_AI_USAGE_DATE
+    FROM company_org_map com
+    INNER JOIN PORT_ANALYTICS_PROD.DWH.FACT_AI_USAGE ai
+        ON ai.SK_ORG = com.SK_ORG
+    WHERE ai.NUMBER_OF_EVENTS > 0
+    GROUP BY com.SK_COMPANY
+),
+gong_calls AS (
+    -- IN-WINDOW count (not a cumulative pair): calls made between
+    -- ASSIGNED_DATE and LEFT_DATE where this TSM is the owner.
+    SELECT
+        f.PERIOD_ID,
         COUNT(DISTINCT fc.SK_CONVERSATION) AS GONG_CALLS
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
+    FROM ownership_periods f
     INNER JOIN PORT_ANALYTICS_PROD.DWH.MV_CALL_ASSOCIATED_COMPANY_FLAT caf
         ON caf.ASSOCIATED_SK = f.SK_COMPANY
     INNER JOIN PORT_ANALYTICS_PROD.DWH.FACT_CALL fc
         ON fc.SK_CONVERSATION = caf.SK_CONVERSATION
         AND fc.EFFECTIVE_START_DATETIME >= f.ASSIGNED_DATE
-        AND fc.EFFECTIVE_START_DATETIME <= arr.LEFT_DATE
+        AND fc.EFFECTIVE_START_DATETIME <= f.LEFT_DATE
         AND ARRAY_CONTAINS(f.SK_CSM_OWNER::VARIANT, fc.ASSOCIATED_OWNER)
         AND fc.DURATION_SECONDS > 600  -- Over 10 minutes
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
+    GROUP BY f.PERIOD_ID
 ),
-purchased_seats AS (
-    SELECT SK_COMPANY, SK_LICENSE, START_DATE, END_DATE, TOTAL_LICENSED_USERS, IS_UNLIMITED, TYPE
-    FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
-    WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
+self_service_at_dates AS (
+    -- Cumulative self-service runs as of each date. Additive, so runs DURING
+    -- the period = SELF_SERVICE_RUNS_AT_LEFT - SELF_SERVICE_RUNS_AT_ASSIGNMENT.
+    SELECT
+        f.PERIOD_ID,
+        SUM(CASE WHEN ar._FACT_DATE <= f.ASSIGNED_DATE
+                 THEN ar.COUNT_SUCCEEDED + ar.COUNT_FAILED END) AS SELF_SERVICE_RUNS_AT_ASSIGNMENT,
+        SUM(CASE WHEN ar._FACT_DATE <= f.LEFT_DATE
+                 THEN ar.COUNT_SUCCEEDED + ar.COUNT_FAILED END) AS SELF_SERVICE_RUNS_AT_LEFT
+    FROM ownership_periods f
+    INNER JOIN company_org_map com
+        ON com.SK_COMPANY = f.SK_COMPANY
+        AND com.IS_ACTIVE_LIFECYCLE
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_ACTION_RUNS ar
+        ON ar.SK_ORG = com.SK_ORG
+        AND ar.SK_ACTION IN (SELECT SK_ACTION FROM PORT_ANALYTICS_PROD.DWH.DIM_ACTION WHERE TRIGGER_TYPE = 'self-service')
+    GROUP BY f.PERIOD_ID
+),
+integration_types_at_dates AS (
+    -- Distinct integration TYPES live on each date: created on/before the date
+    -- and not deleted by then. Types, not instances - one type can hold many
+    -- connections (Bell Canada has 15 gitlab-v2), which is one capability, not
+    -- fifteen. Uses _DELETED_TIMESTAMP_UTC for point-in-time state rather than
+    -- the current _IS_DELETED flag.
+    SELECT
+        f.PERIOD_ID,
+        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
+                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
+                                  OR di._DELETED_TIMESTAMP_UTC > f.ASSIGNED_DATE)
+                            THEN di.INTEGRATION_TYPE END) AS INTEGRATION_TYPES_AT_ASSIGNMENT,
+        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.LEFT_DATE
+                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
+                                  OR di._DELETED_TIMESTAMP_UTC > f.LEFT_DATE)
+                            THEN di.INTEGRATION_TYPE END) AS INTEGRATION_TYPES_AT_LEFT
+    FROM ownership_periods f
+    INNER JOIN company_org_map com
+        ON com.SK_COMPANY = f.SK_COMPANY
+    LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_INTEGRATION di
+        ON di.SK_ORG = com.SK_ORG
+    GROUP BY f.PERIOD_ID
 ),
 company_first_license AS (
+    -- Only used for CUSTOMER_AGE_MONTHS. Licence and seat-utilization columns
+    -- are no longer exposed.
     SELECT SK_COMPANY, MIN(START_DATE) AS FIRST_LICENSE_DATE
     FROM PORT_ANALYTICS_PROD.DWH.FACT_PURCHASED_SEATS
     WHERE DATEDIFF(day, START_DATE, END_DATE) > 1
       AND TOTAL_LICENSED_USERS > 0
     GROUP BY SK_COMPANY
-),
-company_ai_features AS (
-    SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        SUM(ai.NUMBER_OF_EVENTS) AS AI_EVENTS
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
-        ON da.SK_COMPANY = f.SK_COMPANY
-        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
-        ON dc_lc.SK_COMPANY = da.SK_COMPANY
-        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
-        ON do.SK_ACCOUNT = da.SK_ACCOUNT
-    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_AI_USAGE ai
-        ON ai.SK_ORG = do.SK_ORG
-        AND ai._FACT_DATE >= f.ASSIGNED_DATE
-        AND ai._FACT_DATE <= arr.LEFT_DATE
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
-),
-company_first_ai_date AS (
-    -- All-time first AI usage date per company (no ownership window restriction)
-    SELECT
-        da.SK_COMPANY,
-        MIN(ai._FACT_DATE) AS FIRST_AI_USAGE_DATE
-    FROM PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
-        ON do.SK_ACCOUNT = da.SK_ACCOUNT
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.FACT_AI_USAGE ai
-        ON ai.SK_ORG = do.SK_ORG
-    WHERE da.IS_COMMERCIAL_ACCOUNT = TRUE
-      AND ai.NUMBER_OF_EVENTS > 0
-    GROUP BY da.SK_COMPANY
-),
-license_at_dates AS (
-    -- Seats in force at the assignment date and at the left date (point-in-time,
-    -- not "first overlapping"). NULL when no license was active on that date.
-    SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        MAX(CASE WHEN ps.START_DATE <= f.ASSIGNED_DATE::DATE
-                  AND ps.END_DATE   >= f.ASSIGNED_DATE::DATE
-                 THEN ps.TOTAL_LICENSED_USERS END) AS LICENSES_AT_ASSIGNMENT,
-        MAX(CASE WHEN ps.START_DATE <= arr.LEFT_DATE::DATE
-                  AND ps.END_DATE   >= arr.LEFT_DATE::DATE
-                 THEN ps.TOTAL_LICENSED_USERS END) AS LICENSES_AT_LEFT
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    LEFT JOIN purchased_seats ps
-        ON ps.SK_COMPANY = f.SK_COMPANY
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
-),
-logins_at_dates AS (
-    -- All-time cumulative distinct users as of the assignment date and as of the
-    -- left date. The difference between the two is net new users during ownership.
-    SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= f.ASSIGNED_DATE::DATE
-                            THEN ful.USER_EMAIL_ADDRESS END) AS UNIQUE_LOGINS_AT_ASSIGNMENT,
-        COUNT(DISTINCT CASE WHEN ful.LOGIN_DATE <= arr.LEFT_DATE::DATE
-                            THEN ful.USER_EMAIL_ADDRESS END) AS UNIQUE_LOGINS_AT_LEFT
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
-        ON da.SK_COMPANY = f.SK_COMPANY
-        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc_lc
-        ON dc_lc.SK_COMPANY = da.SK_COMPANY
-        AND dc_lc.LIFECYCLE_STAGE IN ('Customer', 'Churn')
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
-        ON do.SK_ACCOUNT = da.SK_ACCOUNT
-    LEFT JOIN PORT_ANALYTICS_PROD.DWH.FACT_USER_LOGIN ful
-        ON ful.SK_ORG = do.SK_ORG
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
-),
-integrations_at_dates AS (
-    -- Distinct integration TYPES (data inputs) live on the assignment date and on
-    -- the left date: created on/before the date and not deleted by then. Types, not
-    -- instances - a company can hold many connections of the same type (Bell Canada
-    -- has 15 gitlab-v2 instances) which is one capability, not fifteen. Uses
-    -- _DELETED_TIMESTAMP_UTC for point-in-time state, not the current _IS_DELETED.
-    SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
-                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
-                                  OR di._DELETED_TIMESTAMP_UTC > f.ASSIGNED_DATE)
-                            THEN di.INTEGRATION_TYPE END) AS INTEGRATION_TYPES_AT_ASSIGNMENT,
-        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= arr.LEFT_DATE
-                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
-                                  OR di._DELETED_TIMESTAMP_UTC > arr.LEFT_DATE)
-                            THEN di.INTEGRATION_TYPE END) AS INTEGRATION_TYPES_AT_LEFT,
-        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= f.ASSIGNED_DATE
-                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
-                                  OR di._DELETED_TIMESTAMP_UTC > f.ASSIGNED_DATE)
-                            THEN di.SK_INTEGRATION END) AS INTEGRATIONS_AT_ASSIGNMENT,
-        COUNT(DISTINCT CASE WHEN di.CREATED_AT <= arr.LEFT_DATE
-                             AND (di._DELETED_TIMESTAMP_UTC IS NULL
-                                  OR di._DELETED_TIMESTAMP_UTC > arr.LEFT_DATE)
-                            THEN di.SK_INTEGRATION END) AS INTEGRATIONS_AT_LEFT
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ACCOUNT da
-        ON da.SK_COMPANY = f.SK_COMPANY
-        AND da.IS_COMMERCIAL_ACCOUNT = TRUE
-    INNER JOIN PORT_ANALYTICS_PROD.DWH.DIM_ORG do
-        ON do.SK_ACCOUNT = da.SK_ACCOUNT
-    LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_INTEGRATION di
-        ON di.SK_ORG = do.SK_ORG
-    WHERE f.assignment_rank = 1
-    GROUP BY f.SK_CSM_OWNER, f.SK_COMPANY
-),
-company_licensed_users AS (
-    SELECT
-        f.SK_CSM_OWNER,
-        f.SK_COMPANY,
-        ps.TOTAL_LICENSED_USERS AS LICENSED_USERS_AT_ASSIGNMENT,
-        ps.IS_UNLIMITED
-    FROM first_assignment f
-    INNER JOIN arr_metrics arr
-        ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-        AND f.SK_COMPANY = arr.SK_COMPANY
-    INNER JOIN purchased_seats ps
-        ON ps.SK_COMPANY = f.SK_COMPANY
-        AND ps.START_DATE <= arr.LEFT_DATE::DATE  -- License starts before or on left date
-        AND ps.END_DATE >= f.ASSIGNED_DATE::DATE - 1  -- License ends after or near assignment
-    WHERE f.assignment_rank = 1
-      AND ps.TOTAL_LICENSED_USERS != 0
-    QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY f.SK_CSM_OWNER, f.SK_COMPANY
-        ORDER BY ps.START_DATE
-    ) = 1
 )
-SELECT 
+SELECT
     t.DISPLAY_NAME,
     t.EMAIL,
     t.TITLE,
     t.HIRE_DATE,
     f.SK_COMPANY,
-    dc.COMPANY_CRM_ID,
-    dc.COMPANY_NAME,
+    f.COMPANY_CRM_ID,
+    f.COMPANY_NAME,
     fl.FIRST_LICENSE_DATE,
-    DATEDIFF('month', fl.FIRST_LICENSE_DATE, arr.LEFT_DATE) AS CUSTOMER_AGE_MONTHS,
+    -- Elapsed months, not DATEDIFF('month'), for the same boundary-crossing
+    -- reason as MONTHS_OWNED below. Negative values are meaningful: they mark
+    -- pre-contract ownership, where the TSM held the account before it had a
+    -- licence, so FIRST_LICENSE_DATE falls after LEFT_DATE.
+    ROUND(DATEDIFF('day', fl.FIRST_LICENSE_DATE, f.LEFT_DATE) / 30.44, 1) AS CUSTOMER_AGE_MONTHS,
     f.ASSIGNED_DATE,
-    arr.LEFT_DATE,
-    DATEDIFF('quarter', f.ASSIGNED_DATE, arr.LEFT_DATE) AS QUARTERS_OWNED,
-    arr.ARR_AT_ASSIGNMENT,
-    arr.ARR_AT_END_DATE,
-    arr.TIER_AT_ASSIGNMENT,
+    f.ASSIGNED_DATE_FLOORED_AT_HIRE,
+    f.LEFT_DATE,
+    -- Elapsed months, not DATEDIFF('month'): DATEDIFF counts calendar-boundary
+    -- crossings, so a 33-day period inside one month would report 0 while a
+    -- 2-day period spanning month end would report 1. Divided by the mean month
+    -- length and kept to one decimal so short periods stay visible.
+    ROUND(DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) / 30.44, 1) AS MONTHS_OWNED,
+    at.TIER_AT_ASSIGNMENT,
+    at.ARR_AT_ASSIGNMENT,
+    at.ARR_AT_END_DATE,
     CASE
-        WHEN arr.ARR_AT_END_DATE = 0 AND arr.ARR_AT_ASSIGNMENT > 0 THEN 'churn'
-        WHEN arr.ARR_AT_ASSIGNMENT > arr.ARR_AT_END_DATE            THEN 'downgrade'
-        WHEN arr.ARR_AT_ASSIGNMENT < arr.ARR_AT_END_DATE            THEN 'upgrade'
+        WHEN at.ARR_AT_END_DATE = 0 AND at.ARR_AT_ASSIGNMENT > 0 THEN 'churn'
+        WHEN at.ARR_AT_ASSIGNMENT > at.ARR_AT_END_DATE            THEN 'downgrade'
+        WHEN at.ARR_AT_ASSIGNMENT < at.ARR_AT_END_DATE            THEN 'upgrade'
         ELSE 'no_change'
     END AS ARR_TYPE,
+    lod.UNIQUE_LOGINS_AT_ASSIGNMENT,
+    lod.UNIQUE_LOGINS_AT_LEFT,
+    COALESCE(ai.AI_EVENTS_AT_ASSIGNMENT, 0) AS AI_EVENTS_AT_ASSIGNMENT,
+    COALESCE(ai.AI_EVENTS_AT_LEFT, 0)       AS AI_EVENTS_AT_LEFT,
+    cfa.FIRST_AI_USAGE_DATE,
     COALESCE(gc.GONG_CALLS, 0) AS GONG_CALLS,
-    -- Gong call targets per tier (annualized, prorated to ownership period):
+    -- Gong call targets per tier (annualized, prorated to the period):
     --   Strategic : 48 calls/year
     --   Core+     : 36 calls/year
     --   Core      : 9 calls/year
     --   Digital   : no target defined
     ROUND(
-        DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) / 365.0 *
-        CASE arr.TIER_AT_ASSIGNMENT
+        DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) / 365.0 *
+        CASE at.TIER_AT_ASSIGNMENT
             WHEN 'Strategic' THEN 48
             WHEN 'Core+'     THEN 36
             WHEN 'Core'      THEN 9
             ELSE 0
         END
     ) AS EXPECTED_GONG_CALLS,
-    COALESCE(cl.UNIQUE_LOGINS, 0) AS UNIQUE_LOGINS,
-    COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0) AS TOTAL_SELF_SERVICE_RUNS,
-    DIV0(COALESCE(ar.TOTAL_SELF_SERVICE_RUNS, 0), NULLIF(DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE), 0) / 30.0) AS MONTHLY_SELF_SERVICE_RUNS,
-    cfa.FIRST_AI_USAGE_DATE,
-    COALESCE(ai.AI_EVENTS, 0) AS AI_EVENTS,
-    COALESCE(lu.LICENSED_USERS_AT_ASSIGNMENT, 0) AS LICENSED_USERS_AT_ASSIGNMENT,
-    COALESCE(lu.IS_UNLIMITED, FALSE) AS IS_UNLIMITED,
-    lad.LICENSES_AT_ASSIGNMENT,
-    lad.LICENSES_AT_LEFT,
-    lod.UNIQUE_LOGINS_AT_ASSIGNMENT,
-    lod.UNIQUE_LOGINS_AT_LEFT,
-    DIV0(lod.UNIQUE_LOGINS_AT_ASSIGNMENT, lad.LICENSES_AT_ASSIGNMENT) AS SEAT_UTILIZATION_AT_ASSIGNMENT,
-    DIV0(lod.UNIQUE_LOGINS_AT_LEFT, lad.LICENSES_AT_LEFT) AS SEAT_UTILIZATION_AT_LEFT,
+    COALESCE(ss.SELF_SERVICE_RUNS_AT_ASSIGNMENT, 0) AS SELF_SERVICE_RUNS_AT_ASSIGNMENT,
+    COALESCE(ss.SELF_SERVICE_RUNS_AT_LEFT, 0)       AS SELF_SERVICE_RUNS_AT_LEFT,
     iad.INTEGRATION_TYPES_AT_ASSIGNMENT,
     iad.INTEGRATION_TYPES_AT_LEFT,
-    iad.INTEGRATIONS_AT_ASSIGNMENT,
-    iad.INTEGRATIONS_AT_LEFT,
-    -- TRUE only on the row representing the company's live assignment: the row's
-    -- owner is the current owner in DIM_COMPANY and ownership has not ended.
-    -- At most one row per company can be TRUE.
-    CASE WHEN dc.SK_CSM_OWNER = f.SK_CSM_OWNER
-           AND arr.LEFT_DATE::DATE >= (SELECT relevant_date FROM params)
-         THEN TRUE ELSE FALSE END AS IS_CURRENT_CS
+    -- TRUE only on the company's live ownership period. At most one row per
+    -- company can be TRUE. Computed in ownership_periods so the WHERE clause
+    -- below can filter on it.
+    f.IS_CURRENT_CS
 FROM tsm_employees t
-LEFT JOIN first_assignment f 
-    ON t.SK_EMPLOYEE = f.SK_CSM_OWNER 
-    AND f.assignment_rank = 1
-LEFT JOIN arr_metrics arr
-    ON f.SK_CSM_OWNER = arr.SK_CSM_OWNER
-    AND f.SK_COMPANY = arr.SK_COMPANY
-LEFT JOIN company_gong_calls gc
-    ON f.SK_CSM_OWNER = gc.SK_CSM_OWNER
-    AND f.SK_COMPANY = gc.SK_COMPANY
-LEFT JOIN company_logins cl
-    ON f.SK_CSM_OWNER = cl.SK_CSM_OWNER
-    AND f.SK_COMPANY = cl.SK_COMPANY
-LEFT JOIN company_self_service_runs ar
-    ON f.SK_CSM_OWNER = ar.SK_CSM_OWNER
-    AND f.SK_COMPANY = ar.SK_COMPANY
-LEFT JOIN company_ai_features ai
-    ON f.SK_CSM_OWNER = ai.SK_CSM_OWNER
-    AND f.SK_COMPANY = ai.SK_COMPANY
-LEFT JOIN company_licensed_users lu
-    ON f.SK_CSM_OWNER = lu.SK_CSM_OWNER
-    AND f.SK_COMPANY = lu.SK_COMPANY
-LEFT JOIN PORT_ANALYTICS_PROD.DWH.DIM_COMPANY dc
-    ON f.SK_COMPANY = dc.SK_COMPANY
-LEFT JOIN company_first_license fl
-    ON f.SK_COMPANY = fl.SK_COMPANY
+LEFT JOIN ownership_periods f
+    ON t.SK_EMPLOYEE = f.SK_CSM_OWNER
+LEFT JOIN arr_and_tier_at_dates at
+    ON f.PERIOD_ID = at.PERIOD_ID
+LEFT JOIN logins_at_dates lod
+    ON f.PERIOD_ID = lod.PERIOD_ID
+LEFT JOIN ai_at_dates ai
+    ON f.PERIOD_ID = ai.PERIOD_ID
+LEFT JOIN gong_calls gc
+    ON f.PERIOD_ID = gc.PERIOD_ID
+LEFT JOIN self_service_at_dates ss
+    ON f.PERIOD_ID = ss.PERIOD_ID
+LEFT JOIN integration_types_at_dates iad
+    ON f.PERIOD_ID = iad.PERIOD_ID
 LEFT JOIN company_first_ai_date cfa
     ON f.SK_COMPANY = cfa.SK_COMPANY
-LEFT JOIN license_at_dates lad
-    ON f.SK_CSM_OWNER = lad.SK_CSM_OWNER
-    AND f.SK_COMPANY = lad.SK_COMPANY
-LEFT JOIN logins_at_dates lod
-    ON f.SK_CSM_OWNER = lod.SK_CSM_OWNER
-    AND f.SK_COMPANY = lod.SK_COMPANY
-LEFT JOIN integrations_at_dates iad
-    ON f.SK_CSM_OWNER = iad.SK_CSM_OWNER
-    AND f.SK_COMPANY = iad.SK_COMPANY
-WHERE f.SK_COMPANY IS NULL  -- TSMs with no assignments still show
-   OR (
-        DATEDIFF('day', f.ASSIGNED_DATE, arr.LEFT_DATE) > 14  -- Only assignments > 14 days
-        AND lu.LICENSED_USERS_AT_ASSIGNMENT IS NOT NULL       -- Must have had a license during ownership
-      )
+LEFT JOIN company_first_license fl
+    ON f.SK_COMPANY = fl.SK_COMPANY
+WHERE f.SK_COMPANY IS NULL  -- TSMs with no periods still show
+   OR f.IS_CURRENT_CS       -- Live ownership always shows, regardless of tenure
+   OR DATEDIFF('day', f.ASSIGNED_DATE, f.LEFT_DATE) > 14  -- Historical: over 14 days only
 ORDER BY t.DISPLAY_NAME, f.ASSIGNED_DATE;
