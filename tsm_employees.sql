@@ -39,11 +39,22 @@
 --               multi-day handoffs still split the timeline.
 --   Pre-2024 SCD records are excluded (unreliable historical data - the SCD
 --   reaches back to 2022-05-08, ~35k rows, predating the company).
---   ASSIGNED_DATE is floored at the owner's hire date: a CS owner cannot own a
---   customer before being hired, but the CRM asserts pre-hire ownership on a
---   meaningful number of rows. ASSIGNED_DATE_FLOORED_AT_HIRE flags those, since
---   their ASSIGNED_DATE is the hire date and will NOT appear in HubSpot's change
---   history (HubSpot logs changes, and "was already the owner" is not a change).
+--   ASSIGNED_DATE is floored by whichever of three rules is latest, and
+--   ASSIGNED_DATE_SOURCE records which one applied:
+--     'crm_event'           - the CRM run start; findable in HubSpot.
+--     'hire_date'           - the CRM claims ownership before the owner was
+--                             hired, which is impossible.
+--     'customer_conversion' - the CRM claims CS ownership before the company
+--                             became a customer. Before conversion the account
+--                             is a Lead/SQL and its "owner" is a sales-cycle
+--                             owner, not a CS owner.
+--   Only 'crm_event' dates appear in HubSpot's CS Owner change history. The
+--   other two are derived corrections, so searching HubSpot for them finds
+--   nothing - by design, not by error.
+--   Note a company's first SCD record is its HubSpot creation timestamp
+--   (DIM_COMPANY.CREATED_AT matches it exactly), and an owner set at creation
+--   is never logged as a "change" by HubSpot, which only records changes TO a
+--   value.
 --
 -- DATE ARITHMETIC:
 --   MONTHS_OWNED and CUSTOMER_AGE_MONTHS use elapsed days / 30.44, NOT
@@ -143,6 +154,20 @@ customer_pool AS (
         SK_CSM_OWNER AS CURRENT_OWNER
     FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY
     WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')
+),
+company_became_customer AS (
+    -- When each company FIRST became a customer. CS ownership of a customer
+    -- cannot predate this: before conversion the account is a Lead/SQL and any
+    -- "owner" on it is a sales-cycle owner (often the Solution Architect), not
+    -- a CS owner. e.g. CAPITAL COM IP LTD was created 2025-01-09 as a Lead with
+    -- Ayodeji as owner and only converted 2025-12-23, so his Jan-Dec 2025
+    -- stretch was never customer ownership.
+    -- No 2024 floor here: this is used only as a lower bound, and an earlier
+    -- conversion date simply never clips anything.
+    SELECT SK_COMPANY, MIN(EFFECTIVE_START_DATE) AS BECAME_CUSTOMER_AT
+    FROM PORT_ANALYTICS_PROD.DWH.DIM_COMPANY_SCD
+    WHERE LIFECYCLE_STAGE IN ('Customer', 'Churn')
+    GROUP BY SK_COMPANY
 ),
 tsm_employees AS (
     -- Owner roster with hire dates.
@@ -263,13 +288,21 @@ ownership_periods AS (
         cp.LIFECYCLE_STAGE,
         cp.CUSTOMER_INTERNAL_TIER,
         t.HIRE_DATE,
-        GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP) AS ASSIGNED_DATE,
-        -- TRUE when the CRM claims ownership starting before the owner's hire
-        -- date, so ASSIGNED_DATE above is the hire date rather than a real CRM
-        -- event. Such a date will NOT be findable in HubSpot's change history.
-        -- A CS owner cannot own a customer before being hired, so the floor is
-        -- correct - this flag just makes the correction auditable.
-        (r.run_start < t.HIRE_DATE::TIMESTAMP) AS ASSIGNED_DATE_FLOORED_AT_HIRE,
+        -- ASSIGNED_DATE is floored by three rules, whichever is latest:
+        --   the CRM run start, the owner's hire date, and the date the company
+        --   became a customer. The latter two correct impossible CRM states.
+        GREATEST(r.run_start,
+                 t.HIRE_DATE::TIMESTAMP,
+                 bc.BECAME_CUSTOMER_AT) AS ASSIGNED_DATE,
+        -- Which rule set ASSIGNED_DATE. Only 'crm_event' dates are findable in
+        -- HubSpot's CS Owner change history; the other two are derived
+        -- corrections, so their dates will not appear there.
+        CASE
+            WHEN bc.BECAME_CUSTOMER_AT >= GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP)
+                 AND bc.BECAME_CUSTOMER_AT > r.run_start          THEN 'customer_conversion'
+            WHEN t.HIRE_DATE::TIMESTAMP > r.run_start             THEN 'hire_date'
+            ELSE 'crm_event'
+        END AS ASSIGNED_DATE_SOURCE,
         LEAST(r.run_end, (SELECT relevant_date FROM params)) AS LEFT_DATE,
         -- At most one period per company can be live: the run is still open
         -- AND this owner is the current owner in DIM_COMPANY.
@@ -280,9 +313,14 @@ ownership_periods AS (
         ON t.SK_EMPLOYEE = r.SK_CSM_OWNER
     INNER JOIN customer_pool cp
         ON cp.SK_COMPANY = r.SK_COMPANY
-    -- Period must overlap the reporting window and not start after it
-    WHERE GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP) <= (SELECT relevant_date FROM params)
+    INNER JOIN company_became_customer bc
+        ON bc.SK_COMPANY = r.SK_COMPANY
+    -- Period must overlap the reporting window, start after the hire date, and
+    -- extend past the customer conversion (pre-conversion ownership is not CS
+    -- ownership at all).
+    WHERE GREATEST(r.run_start, t.HIRE_DATE::TIMESTAMP, bc.BECAME_CUSTOMER_AT) <= (SELECT relevant_date FROM params)
       AND r.run_end > t.HIRE_DATE::TIMESTAMP
+      AND r.run_end > bc.BECAME_CUSTOMER_AT
 ),
 -- ---------- metrics, all keyed on PERIOD_ID ----------
 arr_and_tier_at_dates AS (
@@ -436,7 +474,7 @@ SELECT
     -- licence, so FIRST_LICENSE_DATE falls after LEFT_DATE.
     ROUND(DATEDIFF('day', fl.FIRST_LICENSE_DATE, f.LEFT_DATE) / 30.44, 1) AS CUSTOMER_AGE_MONTHS,
     f.ASSIGNED_DATE,
-    f.ASSIGNED_DATE_FLOORED_AT_HIRE,
+    f.ASSIGNED_DATE_SOURCE,
     f.LEFT_DATE,
     -- Elapsed months, not DATEDIFF('month'): DATEDIFF counts calendar-boundary
     -- crossings, so a 33-day period inside one month would report 0 while a
