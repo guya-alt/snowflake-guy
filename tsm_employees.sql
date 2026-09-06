@@ -34,6 +34,11 @@
 -- Final filters: historical periods must exceed 14 days; current periods are
 -- exempt. No licence requirement, so companies with no licence record still
 -- appear. TSMs with no qualifying periods appear with NULL company rows.
+--
+-- One owner is special-cased: an automation assigns Al Sharma to ARR-changing
+-- deals and hands the account straight back, splitting the real owner's tenure
+-- around the change. Short sandwiched runs of his are suppressed in runs_kept
+-- so the surrounding owner keeps one continuous period. See that CTE.
 -- ============================================================
 
 WITH params AS (
@@ -174,13 +179,38 @@ runs_pass1 AS (
     FROM run_pass1_grp
     GROUP BY SK_COMPANY, SK_CSM_OWNER, run_grp
 ),
+runs_pass1_nbr AS (
+    -- Neighbouring owners per company, needed to spot the automation sandwich
+    -- below. Computed on collapsed runs, not raw SCD versions.
+    SELECT r.*,
+        LAG(r.SK_CSM_OWNER)  OVER (PARTITION BY r.SK_COMPANY ORDER BY r.run_start) AS prev_owner,
+        LEAD(r.SK_CSM_OWNER) OVER (PARTITION BY r.SK_COMPANY ORDER BY r.run_start) AS next_owner
+    FROM runs_pass1 r
+),
 runs_kept AS (
     -- Drop blip runs. Hours, not DATEDIFF('day'): a ~12h run crossing midnight
     -- returns day-diff 1 and would survive. Open/current runs always kept.
-    SELECT *
-    FROM runs_pass1
-    WHERE run_end > (SELECT relevant_date FROM params)
-       OR DATEDIFF('hour', run_start, run_end) >= 24
+    --
+    -- Also drop the Al Sharma automation sandwich. An automation assigns him to
+    -- deals that expand or change ARR and then hands the account straight back,
+    -- which splits the real owner's tenure either side of the change so neither
+    -- period captures the ARR delta. Suppressing the run lets run_pass2 re-merge
+    -- the surrounding owner into one continuous period spanning the change.
+    -- Requires prev_owner = next_owner, so genuine interim handoffs
+    -- (X -> Al -> Y) are left alone, as is his live Banco Davivienda ownership.
+    -- The 14-day cap means a long stint is never absorbed into someone else's
+    -- tenure; it does leave 3 low-value longer cases uncorrected (Thomson
+    -- Reuters +$500, Banbif -$6,435, Bell Canada +$5,000).
+    SELECT SK_COMPANY, SK_CSM_OWNER, run_start, run_end
+    FROM runs_pass1_nbr
+    WHERE (run_end > (SELECT relevant_date FROM params)
+           OR DATEDIFF('hour', run_start, run_end) >= 24)
+      AND NOT (
+            SK_CSM_OWNER = (SELECT SK_EMPLOYEE FROM PORT_ANALYTICS_PROD.DWH.DIM_EMPLOYEE
+                            WHERE EMAIL = 'als@port.io')
+        AND prev_owner = next_owner
+        AND DATEDIFF('day', run_start, run_end) < 14
+      )
 ),
 run_pass2_flag AS (
     SELECT k.*,
