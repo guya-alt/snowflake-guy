@@ -37,6 +37,7 @@
     const ICONS = {
       Calculator: '<rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="14"/><line x1="16" x2="16" y1="10" y2="10"/><line x1="16" x2="16" y1="18" y2="18"/><line x1="8" x2="8" y1="14" y2="14"/><line x1="8" x2="8" y1="10" y2="10"/><line x1="8" x2="8" y1="18" y2="18"/><line x1="12" x2="12" y1="14" y2="14"/><line x1="12" x2="12" y1="10" y2="10"/><line x1="12" x2="12" y1="18" y2="18"/>',
       TrendingUp: '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+      TrendingDown: '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
       Users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
       Target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
       ArrowUpRight: '<line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/>',
@@ -45,7 +46,8 @@
       Percent: '<line x1="19" x2="5" y1="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
       History: '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/>',
       Info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
-      CheckCircle: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'
+      CheckCircle: '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+      Settings2: '<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="7" r="3"/><circle cx="7" cy="17" r="3"/>'
     };
 
     const Icon = ({ name, className }) => (
@@ -53,28 +55,38 @@
     );
 
     function App() {
+      // Core Variables
       const [sdrCount, setSdrCount] = useState(5);
       const [targetRevenue, setTargetRevenue] = useState(150000);
       const [multiplier, setMultiplier] = useState(3);
-      const [asp, setAsp] = useState(34000); // Updated default ASP to 34,000
+      const [asp, setAsp] = useState(34000);
       const [qualRate, setQualRate] = useState(24);
       const [lastYearMeetings, setLastYearMeetings] = useState(248);
 
+      // Advanced Mode (Churn)
+      const [enableChurn, setEnableChurn] = useState(false);
+      const [churnRate, setChurnRate] = useState(39);
+
+      // Formatters
       const formatCurrency = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
       const formatNum = (val) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(val);
 
-      const dealsWon = asp > 0 ? targetRevenue / asp : 0;
-      const pipelineDeals = dealsWon * multiplier;
-      const pipelineRevenue = targetRevenue * multiplier;
+      // Math
+      const effectiveChurn = enableChurn ? (churnRate / 100) : 0;
       
-      // Math.ceil ensures we always round up to a whole meeting
+      // If modeling churn, the Target Revenue becomes the "Net Retained" target. 
+      // We must calculate the Gross Revenue needed to absorb the churn.
+      const grossTargetRevenue = effectiveChurn < 1 ? (targetRevenue / (1 - effectiveChurn)) : targetRevenue;
+
+      const dealsWon = asp > 0 ? grossTargetRevenue / asp : 0;
+      const pipelineDeals = dealsWon * multiplier;
+      const pipelineRevenue = grossTargetRevenue * multiplier;
+      
       const meetingsPerSdr = qualRate > 0 ? Math.ceil(pipelineDeals / (qualRate / 100)) : 0;
       const totalMeetings = meetingsPerSdr * sdrCount;
       
       const increaseNeeded = totalMeetings - lastYearMeetings;
       const pctIncrease = lastYearMeetings > 0 ? ((totalMeetings / lastYearMeetings) - 1) * 100 : 0;
-      
-      // Changed boolean to strictly check if we need MORE meetings
       const isPositiveGap = increaseNeeded > 0;
 
       return (
@@ -101,7 +113,7 @@
                 
                 <div className="space-y-5">
                   <InputRow icon="Users" label="Number of SDRs" value={sdrCount} setter={setSdrCount} step="1" />
-                  <InputRow icon="Target" label="Target Revenue per SDR ($)" value={targetRevenue} setter={setTargetRevenue} step="1000" />
+                  <InputRow icon="Target" label={enableChurn ? "Net Target Revenue per SDR ($)" : "Target Revenue per SDR ($)"} value={targetRevenue} setter={setTargetRevenue} step="1000" />
                   <InputRow icon="Layers" label="Pipeline Multiplier (x)" value={multiplier} setter={setMultiplier} step="0.5" />
                   <InputRow icon="Briefcase" label="Average Selling Price ($)" value={asp} setter={setAsp} step="100" />
                   <InputRow icon="Percent" label="Qualification Rate (%)" value={qualRate} setter={setQualRate} step="1" />
@@ -113,6 +125,39 @@
                     step="10" 
                     tooltip="eng group size between 1-101, created in the last 365d, deal owner is known"
                   />
+
+                  {/* Advanced Toggle Area */}
+                  <div className="pt-4 mt-6 border-t border-zinc-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <Icon name="Settings2" className="w-4 h-4 text-zinc-500" />
+                        <span className="text-sm font-medium text-zinc-800">Model Annual Churn (Net Quota)</span>
+                      </div>
+                      
+                      {/* CSS Toggle Switch */}
+                      <button 
+                        onClick={() => setEnableChurn(!enableChurn)}
+                        className={`w-10 h-5 rounded-full relative transition-colors focus:outline-none ${enableChurn ? 'bg-zinc-900' : 'bg-zinc-200'}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform ${enableChurn ? 'translate-x-5' : ''}`}></span>
+                      </button>
+                    </div>
+
+                    {/* Conditional Churn Input */}
+                    {enableChurn && (
+                      <div className="animate-in fade-in slide-in-from-top-2 duration-200">
+                        <InputRow 
+                          icon="TrendingDown" 
+                          label="End of Year Churn Rate (%)" 
+                          value={churnRate} 
+                          setter={setChurnRate} 
+                          step="1" 
+                          tooltip="The percentage of deals that churn after 12 months. This increases the gross pipeline needed to hit the net retained target."
+                        />
+                      </div>
+                    )}
+                  </div>
+
                 </div>
               </section>
 
@@ -128,7 +173,6 @@
                       Target Delta
                     </h3>
                     
-                    {/* Dynamic Header State */}
                     {isPositiveGap ? (
                       <>
                         <div className="flex items-end gap-4 mb-2">
@@ -163,8 +207,8 @@
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <MetricCard label="Total Meetings" value={formatNum(totalMeetings)} />
                   <MetricCard label="Meetings per SDR" value={formatNum(meetingsPerSdr)} />
-                  <MetricCard label="Pipeline Deals" value={formatNum(pipelineDeals)} />
-                  <MetricCard label="Deals Won (SDR)" value={formatNum(dealsWon)} />
+                  <MetricCard label={enableChurn ? "Gross Deals Won Needed" : "Deals Won (SDR)"} value={formatNum(dealsWon)} />
+                  <MetricCard label={enableChurn ? "Gross ARR Needed" : "Revenue Won (SDR)"} value={formatCurrency(grossTargetRevenue)} />
                 </div>
 
                 <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm">
@@ -174,14 +218,54 @@
                     </h3>
                   </div>
                   <div className="p-6 text-sm text-zinc-600 font-mono space-y-4 overflow-x-auto">
-                    <FormulaRow step="1" title="Deals Won Needed" formula="Target Revenue / ASP" calc={`${formatCurrency(targetRevenue)} / ${formatCurrency(asp)}`} result={formatNum(dealsWon)} />
-                    <FormulaRow step="2" title="Pipeline Deals" formula="Deals Won * Multiplier" calc={`${formatNum(dealsWon)} * ${multiplier}`} result={formatNum(pipelineDeals)} />
-                    <FormulaRow step="3" title="Pipeline Revenue" formula="Target Revenue * Multiplier" calc={`${formatCurrency(targetRevenue)} * ${multiplier}`} result={formatCurrency(pipelineRevenue)} />
-                    <FormulaRow step="4" title="Meetings (per SDR)" formula="Math.ceil(Pipeline Deals / Qual Rate)" calc={`${formatNum(pipelineDeals)} / ${qualRate}%`} result={formatNum(meetingsPerSdr)} />
-                    <FormulaRow step="5" title="Total Team Meetings" formula="Meetings per SDR * SDRs" calc={`${formatNum(meetingsPerSdr)} * ${sdrCount}`} result={formatNum(totalMeetings)} />
+                    
+                    {enableChurn && (
+                      <FormulaRow 
+                        step="1" 
+                        title="Gross ARR Needed" 
+                        formula="Net Target / (1 - Churn)" 
+                        calc={`${formatCurrency(targetRevenue)} / ${(1 - effectiveChurn).toFixed(2)}`} 
+                        result={formatCurrency(grossTargetRevenue)} 
+                      />
+                    )}
+                    <FormulaRow 
+                      step={enableChurn ? "2" : "1"} 
+                      title="Deals Won Needed" 
+                      formula={`${enableChurn ? 'Gross ARR' : 'Target Revenue'} / ASP`} 
+                      calc={`${formatCurrency(grossTargetRevenue)} / ${formatCurrency(asp)}`} 
+                      result={formatNum(dealsWon)} 
+                    />
+                    <FormulaRow 
+                      step={enableChurn ? "3" : "2"} 
+                      title="Pipeline Deals" 
+                      formula="Deals Won * Multiplier" 
+                      calc={`${formatNum(dealsWon)} * ${multiplier}`} 
+                      result={formatNum(pipelineDeals)} 
+                    />
+                    <FormulaRow 
+                      step={enableChurn ? "4" : "3"} 
+                      title="Pipeline Revenue" 
+                      formula={`${enableChurn ? 'Gross ARR' : 'Target Revenue'} * Multiplier`} 
+                      calc={`${formatCurrency(grossTargetRevenue)} * ${multiplier}`} 
+                      result={formatCurrency(pipelineRevenue)} 
+                    />
+                    <FormulaRow 
+                      step={enableChurn ? "5" : "4"} 
+                      title="Meetings (per SDR)" 
+                      formula="Math.ceil(Pipeline Deals / Qual Rate)" 
+                      calc={`${formatNum(pipelineDeals)} / ${qualRate}%`} 
+                      result={formatNum(meetingsPerSdr)} 
+                    />
+                    <FormulaRow 
+                      step={enableChurn ? "6" : "5"} 
+                      title="Total Team Meetings" 
+                      formula="Meetings per SDR * SDRs" 
+                      calc={`${formatNum(meetingsPerSdr)} * ${sdrCount}`} 
+                      result={formatNum(totalMeetings)} 
+                    />
                     <div className="pt-3 border-t border-zinc-100">
                       <FormulaRow 
-                        step="6" 
+                        step={enableChurn ? "7" : "6"} 
                         title="Meeting Delta" 
                         formula="Total Meetings - Baseline" 
                         calc={`${formatNum(totalMeetings)} - ${lastYearMeetings}`} 
