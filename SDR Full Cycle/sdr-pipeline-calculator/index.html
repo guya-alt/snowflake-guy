@@ -74,8 +74,6 @@
       // Math
       const effectiveChurn = enableChurn ? (churnRate / 100) : 0;
       
-      // If modeling churn, the Target Revenue becomes the "Net Retained" target. 
-      // We must calculate the Gross Revenue needed to absorb the churn.
       const grossTargetRevenue = effectiveChurn < 1 ? (targetRevenue / (1 - effectiveChurn)) : targetRevenue;
 
       const dealsWon = asp > 0 ? grossTargetRevenue / asp : 0;
@@ -100,7 +98,7 @@
                 </div>
                 <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Pipeline Calculator</h1>
               </div>
-              <p className="text-zinc-500 text-sm">Reverse-engineer meeting requirements based on revenue targets.</p>
+              <p className="text-zinc-500 text-sm">Reverse-engineer SMB meeting requirements based on revenue targets.</p>
             </header>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
@@ -119,7 +117,7 @@
                   <InputRow icon="Percent" label="Qualification Rate (%)" value={qualRate} setter={setQualRate} step="1" />
                   <InputRow 
                     icon="History" 
-                    label="Last Year's Meetings" 
+                    label="Last Year's SMB Meetings" 
                     value={lastYearMeetings} 
                     setter={setLastYearMeetings} 
                     step="10" 
@@ -134,7 +132,6 @@
                         <span className="text-sm font-medium text-zinc-800">Model Annual Churn (Net Quota)</span>
                       </div>
                       
-                      {/* CSS Toggle Switch */}
                       <button 
                         onClick={() => setEnableChurn(!enableChurn)}
                         className={`w-10 h-5 rounded-full relative transition-colors focus:outline-none ${enableChurn ? 'bg-zinc-900' : 'bg-zinc-200'}`}
@@ -143,7 +140,6 @@
                       </button>
                     </div>
 
-                    {/* Conditional Churn Input */}
                     {enableChurn && (
                       <div className="animate-in fade-in slide-in-from-top-2 duration-200">
                         <InputRow 
@@ -170,7 +166,7 @@
                   </div>
                   <div className="relative z-10">
                     <h3 className="text-zinc-400 text-sm font-medium mb-4 flex items-center gap-2">
-                      Target Delta
+                      SMB Target Delta
                     </h3>
                     
                     {isPositiveGap ? (
@@ -185,7 +181,7 @@
                           </div>
                         </div>
                         <p className="text-zinc-400 text-sm max-w-md leading-relaxed mt-4">
-                          To hit the new targets, the team must generate <strong className="text-zinc-200">{formatNum(increaseNeeded)}</strong> more meetings compared to last year's baseline of {lastYearMeetings}.
+                          To hit the new targets, the team must generate <strong className="text-zinc-200">{formatNum(increaseNeeded)}</strong> more SMB meetings compared to last year's baseline of {lastYearMeetings}.
                         </p>
                       </>
                     ) : (
@@ -197,7 +193,7 @@
                           </div>
                         </div>
                         <p className="text-emerald-500/80 text-sm max-w-md leading-relaxed mt-4">
-                          You have enough meetings. Last year's baseline of <strong className="text-emerald-400">{lastYearMeetings}</strong> is sufficient to reach the required <strong className="text-emerald-400">{formatNum(totalMeetings)}</strong> meetings.
+                          You have enough SMB meetings. Last year's baseline of <strong className="text-emerald-400">{lastYearMeetings}</strong> is sufficient to reach the required <strong className="text-emerald-400">{formatNum(totalMeetings)}</strong> SMB meetings.
                         </p>
                       </>
                     )}
@@ -205,8 +201,8 @@
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <MetricCard label="Total Meetings" value={formatNum(totalMeetings)} />
-                  <MetricCard label="Meetings per SDR" value={formatNum(meetingsPerSdr)} />
+                  <MetricCard label="Total SMB Meetings" value={formatNum(totalMeetings)} />
+                  <MetricCard label="SMB Meetings per SDR" value={formatNum(meetingsPerSdr)} />
                   <MetricCard label={enableChurn ? "Gross Deals Won Needed" : "Deals Won (SDR)"} value={formatNum(dealsWon)} />
                   <MetricCard label={enableChurn ? "Gross ARR Needed" : "Revenue Won (SDR)"} value={formatCurrency(grossTargetRevenue)} />
                 </div>
@@ -251,23 +247,23 @@
                     />
                     <FormulaRow 
                       step={enableChurn ? "5" : "4"} 
-                      title="Meetings (per SDR)" 
+                      title="SMB Meetings (per SDR)" 
                       formula="Math.ceil(Pipeline Deals / Qual Rate)" 
                       calc={`${formatNum(pipelineDeals)} / ${qualRate}%`} 
                       result={formatNum(meetingsPerSdr)} 
                     />
                     <FormulaRow 
                       step={enableChurn ? "6" : "5"} 
-                      title="Total Team Meetings" 
-                      formula="Meetings per SDR * SDRs" 
+                      title="Total Team SMB Meetings" 
+                      formula="SMB Meetings per SDR * SDRs" 
                       calc={`${formatNum(meetingsPerSdr)} * ${sdrCount}`} 
                       result={formatNum(totalMeetings)} 
                     />
                     <div className="pt-3 border-t border-zinc-100">
                       <FormulaRow 
                         step={enableChurn ? "7" : "6"} 
-                        title="Meeting Delta" 
-                        formula="Total Meetings - Baseline" 
+                        title="SMB Meeting Delta" 
+                        formula="Total SMB Meetings - Baseline" 
                         calc={`${formatNum(totalMeetings)} - ${lastYearMeetings}`} 
                         result={isPositiveGap ? `+${formatNum(increaseNeeded)}` : 'Target Met'} 
                         highlight={isPositiveGap}
