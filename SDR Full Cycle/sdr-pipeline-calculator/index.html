@@ -24,7 +24,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   
-  <!-- Babel for in-browser JSX compilation -->
+  <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body class="bg-[#FBFBFB] text-zinc-900 font-sans selection:bg-zinc-200">
@@ -33,7 +33,6 @@
   <script type="text/babel">
     const { useState } = React;
 
-    // SVG definitions for Lucide Icons
     const ICONS = {
       Calculator: '<rect width="16" height="20" x="4" y="2" rx="2"/><line x1="8" x2="16" y1="6" y2="6"/><line x1="16" x2="16" y1="14" y2="14"/><line x1="16" x2="16" y1="10" y2="10"/><line x1="16" x2="16" y1="18" y2="18"/><line x1="8" x2="8" y1="14" y2="14"/><line x1="8" x2="8" y1="10" y2="10"/><line x1="8" x2="8" y1="18" y2="18"/><line x1="12" x2="12" y1="14" y2="14"/><line x1="12" x2="12" y1="10" y2="10"/><line x1="12" x2="12" y1="18" y2="18"/>',
       TrendingUp: '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
@@ -55,32 +54,23 @@
     );
 
     function App() {
-      // Core Variables
       const [sdrCount, setSdrCount] = useState(5);
       const [targetRevenue, setTargetRevenue] = useState(150000);
       const [multiplier, setMultiplier] = useState(3);
       const [asp, setAsp] = useState(34000);
-      const [qualRate, setQualRate] = useState(24);
+      const [qualRate, setQualRate] = useState(25);
       const [lastYearTotalMeetings, setLastYearTotalMeetings] = useState(248);
 
-      // Advanced Mode (Churn)
       const [enableChurn, setEnableChurn] = useState(false);
       const [churnRate, setChurnRate] = useState(39);
 
-      // Distribution Curve Logic (Top to Bottom)
       const distributionCurve = [0.14, 0.13, 0.13, 0.10, 0.10, 0.08, 0.08, 0.08, 0.08, 0.08];
-      
-      // Calculate the cumulative percentage based on SDR count
       const cumulativePct = Array.from({length: sdrCount || 0}, (_, i) => i < 10 ? distributionCurve[i] : 0.08).reduce((a, b) => a + b, 0);
-      
-      // The calculated dynamic baseline for the selected top performers
       const selectedBaseline = Math.round((lastYearTotalMeetings || 0) * cumulativePct);
 
-      // Formatters
       const formatCurrency = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
       const formatNum = (val) => new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(val);
 
-      // Math
       const effectiveChurn = enableChurn ? (churnRate / 100) : 0;
       const grossTargetRevenue = effectiveChurn < 1 ? (targetRevenue / (1 - effectiveChurn)) : targetRevenue;
 
@@ -106,12 +96,12 @@
                 </div>
                 <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Pipeline Calculator</h1>
               </div>
-              <p className="text-zinc-500 text-sm">Reverse-engineer SMB meeting requirements based on revenue targets.</p>
+              <p className="text-zinc-500 text-sm">Reverse-engineer SMB meeting requirements from revenue targets.</p>
             </header>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
               
-              {/* Controls Column */}
+              {/* Inputs */}
               <section className="lg:col-span-4 space-y-6">
                 <div className="flex items-center justify-between pb-2 border-b border-zinc-100">
                   <h2 className="text-sm font-medium text-zinc-800">Variables</h2>
@@ -119,34 +109,32 @@
                 
                 <div className="space-y-5">
                   <InputRow icon="Users" label="Number of SDRs" value={sdrCount} setter={setSdrCount} step="1" />
-                  <InputRow icon="Target" label={enableChurn ? "Net Target Revenue per SDR ($)" : "Target Revenue per SDR ($)"} value={targetRevenue} setter={setTargetRevenue} step="1000" />
+                  <InputRow icon="Target" label={enableChurn ? "Net Target / SDR ($)" : "Target Revenue / SDR ($)"} value={targetRevenue} setter={setTargetRevenue} step="1000" />
                   <InputRow icon="Layers" label="Pipeline Multiplier (x)" value={multiplier} setter={setMultiplier} step="0.5" />
-                  <InputRow icon="Briefcase" label="Average Selling Price ($)" value={asp} setter={setAsp} step="100" />
+                  <InputRow icon="Briefcase" label="ASP ($)" value={asp} setter={setAsp} step="100" />
                   <InputRow icon="Percent" label="Qualification Rate (%)" value={qualRate} setter={setQualRate} step="1" />
                   
-                  {/* Dynamic History Input */}
                   <div>
                     <InputRow 
                       icon="History" 
-                      label="Last Year's Total Team SMB Meetings" 
+                      label="Last Year's Total Team Meetings" 
                       value={lastYearTotalMeetings} 
                       setter={setLastYearTotalMeetings} 
                       step="10" 
-                      tooltip="CRM Filters: Eng group size between 1-101, created in the last 365d, deal owner is known. 
-                      
-Input the total meetings generated by the ENTIRE 10-person team last year. The app automatically calculates the specific baseline for your top performers based on the tier curve."
+                      tooltip="Filters: 1-100 eng, past 365d, known owner.
+
+Enter full team's meetings last year. Calculates baseline for your top SDRs automatically."
                     />
                     <div className="mt-2 text-xs font-medium bg-zinc-100/50 text-zinc-500 px-3 py-2 rounded-md border border-zinc-100">
                       Top {sdrCount || 0} SDR Baseline: <strong className="text-zinc-800">{formatNum(selectedBaseline)} meetings</strong> <span className="opacity-75">({(cumulativePct * 100).toFixed(0)}% of total)</span>
                     </div>
                   </div>
 
-                  {/* Advanced Toggle Area */}
                   <div className="pt-4 mt-6 border-t border-zinc-200">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
                         <Icon name="Settings2" className="w-4 h-4 text-zinc-500" />
-                        <span className="text-sm font-medium text-zinc-800">Model Annual Churn (Net Quota)</span>
+                        <span className="text-sm font-medium text-zinc-800">Model Annual Churn</span>
                       </div>
                       
                       <button 
@@ -161,11 +149,11 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
                       <div className="animate-in fade-in slide-in-from-top-2 duration-200">
                         <InputRow 
                           icon="TrendingDown" 
-                          label="End of Year Churn Rate (%)" 
+                          label="Annual Churn Rate (%)" 
                           value={churnRate} 
                           setter={setChurnRate} 
                           step="1" 
-                          tooltip="The percentage of deals that churn after 12 months. This increases the gross pipeline needed to hit the net retained target."
+                          tooltip="Percentage of ARR lost after 12 months. Increases gross revenue required."
                         />
                       </div>
                     )}
@@ -174,59 +162,87 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
                 </div>
               </section>
 
-              {/* Outputs Column */}
+              {/* Outputs */}
               <section className="lg:col-span-8 flex flex-col space-y-8">
                 
+                {/* Hero Summary */}
                 <div className="bg-zinc-900 text-white rounded-xl p-8 shadow-sm border border-zinc-800 relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
                     <Icon name="TrendingUp" className="w-48 h-48" />
                   </div>
-                  <div className="relative z-10">
-                    <h3 className="text-zinc-400 text-sm font-medium mb-4 flex items-center gap-2">
-                      SMB Target Delta
-                    </h3>
-                    
+                  <div className="relative z-10 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-zinc-400 text-sm font-medium">
+                        SMB Target Summary
+                      </h3>
+                      <span className="text-xs px-2.5 py-1 rounded-full bg-zinc-800 text-zinc-300 font-medium">
+                        Top {sdrCount || 0} SDRs
+                      </span>
+                    </div>
+
                     {isPositiveGap ? (
-                      <>
+                      <div>
                         <div className="flex items-end gap-4 mb-2">
                           <div className="text-5xl md:text-6xl font-semibold tracking-tight">
                             +{formatNum(increaseNeeded)}
                           </div>
-                          <div className="flex items-center gap-1 text-lg mb-2 px-2 py-1 rounded-md font-medium bg-zinc-800 text-zinc-100">
-                            <Icon name="ArrowUpRight" className="w-5 h-5" />
-                            {formatNum(pctIncrease)}%
+                          <div className="flex items-center gap-1 text-lg mb-2 px-2.5 py-1 rounded-md font-medium bg-zinc-800 text-zinc-100">
+                            <Icon name="ArrowUpRight" className="w-5 h-5 text-emerald-400" />
+                            +{formatNum(pctIncrease)}%
                           </div>
                         </div>
-                        <p className="text-zinc-400 text-sm max-w-md leading-relaxed mt-4">
-                          To hit the new targets, the selected top {sdrCount || 0} SDRs must generate <strong className="text-zinc-200">{formatNum(increaseNeeded)}</strong> more SMB meetings compared to their historical baseline of {formatNum(selectedBaseline)}.
+                        <p className="text-zinc-400 text-sm max-w-lg leading-relaxed">
+                          Top {sdrCount || 0} SDRs need <strong className="text-zinc-200">+{formatNum(increaseNeeded)} meetings</strong> (+{formatNum(pctIncrease)}%) over their baseline to hit goals.
                         </p>
-                      </>
+                      </div>
                     ) : (
-                      <>
+                      <div>
                         <div className="flex items-end gap-4 mb-2">
                           <div className="text-4xl md:text-5xl font-semibold tracking-tight text-emerald-400 flex items-center gap-3">
                             <Icon name="CheckCircle" className="w-10 h-10" /> 
-                            Target Covered
+                            Target Met
                           </div>
                         </div>
-                        <p className="text-emerald-500/80 text-sm max-w-md leading-relaxed mt-4">
-                          You have enough SMB meetings. The historical baseline of <strong className="text-emerald-400">{formatNum(selectedBaseline)}</strong> for these specific top SDRs is sufficient to reach the required <strong className="text-emerald-400">{formatNum(totalMeetings)}</strong> SMB meetings.
+                        <p className="text-emerald-500/80 text-sm max-w-lg leading-relaxed">
+                          Baseline of <strong className="text-emerald-400">{formatNum(selectedBaseline)}</strong> meetings covers the target of <strong className="text-emerald-400">{formatNum(totalMeetings)}</strong> meetings.
                         </p>
-                      </>
+                      </div>
                     )}
+
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-4 border-t border-zinc-800/80 text-sm">
+                      <div className="bg-zinc-800/50 p-3.5 rounded-lg border border-zinc-800">
+                        <div className="text-zinc-400 text-xs mb-1">Target</div>
+                        <div className="text-xl font-semibold text-white">{formatNum(totalMeetings)} <span className="text-xs font-normal text-zinc-400">meetings</span></div>
+                      </div>
+                      <div className="bg-zinc-800/50 p-3.5 rounded-lg border border-zinc-800">
+                        <div className="text-zinc-400 text-xs mb-1">Baseline</div>
+                        <div className="text-xl font-semibold text-white">{formatNum(selectedBaseline)} <span className="text-xs font-normal text-zinc-400">meetings</span></div>
+                      </div>
+                      <div className="bg-zinc-800/50 p-3.5 rounded-lg border border-zinc-800">
+                        <div className="text-zinc-400 text-xs mb-1">Growth Needed</div>
+                        <div className="text-xl font-semibold text-white">
+                          {isPositiveGap ? `+${formatNum(increaseNeeded)}` : '0'} 
+                          <span className={`text-xs font-normal ml-1.5 ${isPositiveGap ? 'text-emerald-400' : 'text-zinc-400'}`}>
+                            ({isPositiveGap ? `+${formatNum(pctIncrease)}%` : '0%'})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
                   </div>
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <MetricCard label="Total SMB Meetings" value={formatNum(totalMeetings)} />
-                  <MetricCard label="SMB Meetings per SDR" value={formatNum(meetingsPerSdr)} />
-                  <MetricCard label={enableChurn ? "Gross Deals Won Needed" : "Deals Won (SDR)"} value={formatNum(dealsWon)} />
-                  <MetricCard label={enableChurn ? "Gross ARR Needed" : "Revenue Won (SDR)"} value={formatCurrency(grossTargetRevenue)} />
+                  <MetricCard label="Meetings / SDR" value={formatNum(meetingsPerSdr)} />
+                  <MetricCard label={enableChurn ? "Gross Deals Needed" : "Deals Won / SDR"} value={formatNum(dealsWon)} />
+                  <MetricCard label={enableChurn ? "Gross Revenue Needed" : "Revenue / SDR"} value={formatCurrency(grossTargetRevenue)} />
                 </div>
 
                 <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm">
                   <div className="px-6 py-4 border-b border-zinc-100 bg-zinc-50/50">
-                    <h3 className="text-sm font-medium text-zinc-800 flex items-center gap-2">
+                    <h3 className="text-sm font-medium text-zinc-800">
                       Formula Breakdown
                     </h3>
                   </div>
@@ -235,7 +251,7 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
                     {enableChurn && (
                       <FormulaRow 
                         step="1" 
-                        title="Gross ARR Needed" 
+                        title="Gross Revenue Needed" 
                         formula="Net Target / (1 - Churn)" 
                         calc={`${formatCurrency(targetRevenue)} / ${(1 - effectiveChurn).toFixed(2)}`} 
                         result={formatCurrency(grossTargetRevenue)} 
@@ -244,7 +260,7 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
                     <FormulaRow 
                       step={enableChurn ? "2" : "1"} 
                       title="Deals Won Needed" 
-                      formula={`${enableChurn ? 'Gross ARR' : 'Target Revenue'} / ASP`} 
+                      formula={`${enableChurn ? 'Gross Revenue' : 'Target Revenue'} / ASP`} 
                       calc={`${formatCurrency(grossTargetRevenue)} / ${formatCurrency(asp)}`} 
                       result={formatNum(dealsWon)} 
                     />
@@ -258,29 +274,29 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
                     <FormulaRow 
                       step={enableChurn ? "4" : "3"} 
                       title="Pipeline Revenue" 
-                      formula={`${enableChurn ? 'Gross ARR' : 'Target Revenue'} * Multiplier`} 
+                      formula={`${enableChurn ? 'Gross Revenue' : 'Target Revenue'} * Multiplier`} 
                       calc={`${formatCurrency(grossTargetRevenue)} * ${multiplier}`} 
                       result={formatCurrency(pipelineRevenue)} 
                     />
                     <FormulaRow 
                       step={enableChurn ? "5" : "4"} 
-                      title="SMB Meetings (per SDR)" 
+                      title="Meetings / SDR" 
                       formula="Math.ceil(Pipeline Deals / Qual Rate)" 
                       calc={`${formatNum(pipelineDeals)} / ${qualRate}%`} 
                       result={formatNum(meetingsPerSdr)} 
                     />
                     <FormulaRow 
                       step={enableChurn ? "6" : "5"} 
-                      title="Total Team SMB Meetings" 
-                      formula="SMB Meetings per SDR * SDRs" 
+                      title="Total Meetings" 
+                      formula="Meetings per SDR * SDRs" 
                       calc={`${formatNum(meetingsPerSdr)} * ${sdrCount || 0}`} 
                       result={formatNum(totalMeetings)} 
                     />
                     <div className="pt-3 border-t border-zinc-100">
                       <FormulaRow 
                         step={enableChurn ? "7" : "6"} 
-                        title="SMB Meeting Delta" 
-                        formula="Total SMB Meetings - Selected Baseline" 
+                        title="Meeting Growth" 
+                        formula="Total Meetings - Baseline" 
                         calc={`${formatNum(totalMeetings)} - ${formatNum(selectedBaseline)}`} 
                         result={isPositiveGap ? `+${formatNum(increaseNeeded)}` : 'Target Met'} 
                         highlight={isPositiveGap}
@@ -308,7 +324,7 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
             {tooltip && (
               <div className="relative flex items-center">
                 <Icon name="Info" className="w-4 h-4 text-zinc-400 hover:text-zinc-600 transition-colors" />
-                <div className="absolute left-0 sm:left-1/2 sm:-translate-x-1/2 bottom-full mb-2 hidden group-hover:block w-72 p-3 bg-zinc-800 text-zinc-100 text-xs font-normal rounded-md shadow-lg z-50 text-left sm:text-center pointer-events-none whitespace-pre-line leading-relaxed">
+                <div className="absolute left-0 sm:left-1/2 sm:-translate-x-1/2 bottom-full mb-2 hidden group-hover:block w-64 p-2.5 bg-zinc-800 text-zinc-100 text-xs font-normal rounded-md shadow-lg z-50 text-left sm:text-center pointer-events-none whitespace-pre-line leading-relaxed">
                   {tooltip}
                   <div className="absolute left-2 sm:left-1/2 sm:-translate-x-1/2 top-full w-0 h-0 border-l-[5px] border-r-[5px] border-t-[5px] border-l-transparent border-r-transparent border-t-zinc-800"></div>
                 </div>
@@ -338,7 +354,7 @@ Input the total meetings generated by the ENTIRE 10-person team last year. The a
     function FormulaRow({ step, title, formula, calc, result, highlight = false, success = false }) {
       return (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 py-1">
-          <div className="flex items-center gap-3 min-w-[240px]">
+          <div className="flex items-center gap-3 min-w-[200px]">
             <span className="text-zinc-400 select-none">{step}.</span>
             <span className="font-medium text-zinc-700">{title}</span>
           </div>
