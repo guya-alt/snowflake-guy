@@ -90,13 +90,12 @@
           <div className="max-w-6xl mx-auto space-y-8">
             
             <header className="pb-6 border-b border-zinc-200">
-              <div className="flex items-center gap-3 mb-2">
+              <div className="flex items-center gap-3">
                 <div className="p-2 bg-white border border-zinc-200 rounded-md shadow-sm">
                   <Icon name="Calculator" className="w-5 h-5 text-zinc-800" />
                 </div>
                 <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">Pipeline Calculator</h1>
               </div>
-              <p className="text-zinc-500 text-sm">Reverse-engineer SMB meeting requirements from revenue targets.</p>
             </header>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
@@ -233,13 +232,6 @@ Enter full team's meetings last year. Calculates baseline for your top SDRs auto
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <MetricCard label="Total SMB Meetings" value={formatNum(totalMeetings)} />
-                  <MetricCard label="Meetings / SDR" value={formatNum(meetingsPerSdr)} />
-                  <MetricCard label={enableChurn ? "Gross Deals Needed" : "Deals Won / SDR"} value={formatNum(dealsWon)} />
-                  <MetricCard label={enableChurn ? "Gross Revenue Needed" : "Revenue / SDR"} value={formatCurrency(grossTargetRevenue)} />
-                </div>
-
                 <div className="bg-white border border-zinc-200 rounded-xl overflow-hidden shadow-sm">
                   <div className="px-6 py-4 border-b border-zinc-100 bg-zinc-50/50">
                     <h3 className="text-sm font-medium text-zinc-800">
@@ -338,15 +330,6 @@ Enter full team's meetings last year. Calculates baseline for your top SDRs auto
             onChange={(e) => setter(e.target.value === '' ? '' : Number(e.target.value))} 
             className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm text-zinc-900 shadow-sm focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-all outline-none" 
           />
-        </div>
-      );
-    }
-
-    function MetricCard({ label, value }) {
-      return (
-        <div className="bg-white p-5 rounded-xl border border-zinc-200 shadow-sm flex flex-col justify-between">
-          <span className="text-xs font-medium text-zinc-500 mb-2">{label}</span>
-          <span className="text-2xl font-semibold tracking-tight text-zinc-900">{value}</span>
         </div>
       );
     }
