@@ -54,12 +54,12 @@
     );
 
     function App() {
-      const [sdrCount, setSdrCount] = useState(5);
-      const [targetRevenue, setTargetRevenue] = useState(150000);
+      const [sdrCount, setSdrCount] = useState(2);
+      const [targetRevenue, setTargetRevenue] = useState(300000);
       const [multiplier, setMultiplier] = useState(3);
       const [asp, setAsp] = useState(34000);
-      const [qualRate, setQualRate] = useState(25);
-      const [lastYearTotalMeetings, setLastYearTotalMeetings] = useState(248);
+      const [qualRate, setQualRate] = useState(33);
+      const [lastYearTotalMeetings, setLastYearTotalMeetings] = useState(250);
 
       const [enableChurn, setEnableChurn] = useState(false);
       const [churnRate, setChurnRate] = useState(39);
@@ -78,8 +78,12 @@
       const pipelineDeals = dealsWon * multiplier;
       const pipelineRevenue = grossTargetRevenue * multiplier;
       
-      const meetingsPerSdr = qualRate > 0 ? Math.ceil(pipelineDeals / (qualRate / 100)) : 0;
-      const totalMeetings = meetingsPerSdr * (sdrCount || 0);
+      // Calculate meetings/SDR forward from pipelineDeals without premature rounding
+      const meetingsPerSdr = qualRate > 0 ? pipelineDeals / (qualRate / 100) : 0;
+      const totalTeamMeetingsExact = meetingsPerSdr * (sdrCount || 0);
+      
+      // Ceiling applied strictly to the final team target
+      const totalMeetings = Math.ceil(totalTeamMeetingsExact);
       
       const increaseNeeded = totalMeetings - selectedBaseline;
       const pctIncrease = selectedBaseline > 0 ? ((totalMeetings / selectedBaseline) - 1) * 100 : 0;
@@ -111,7 +115,7 @@
                   <InputRow icon="Target" label={enableChurn ? "Net Target / SDR ($)" : "Target Revenue / SDR ($)"} value={targetRevenue} setter={setTargetRevenue} step="1000" />
                   <InputRow icon="Layers" label="Pipeline Multiplier (x)" value={multiplier} setter={setMultiplier} step="0.5" />
                   <InputRow icon="Briefcase" label="ASP ($)" value={asp} setter={setAsp} step="100" />
-                  <InputRow icon="Percent" label="Qualification Rate (%)" value={qualRate} setter={setQualRate} step="1" />
+                  <InputRow icon="Percent" label="Qualification Rate (%)" value={qualRate} setter={setQualRate} step="0.1" />
                   
                   <div>
                     <InputRow 
@@ -273,14 +277,14 @@ Enter full team's meetings last year. Calculates baseline for your top SDRs auto
                     <FormulaRow 
                       step={enableChurn ? "5" : "4"} 
                       title="Meetings / SDR" 
-                      formula="Math.ceil(Pipeline Deals / Qual Rate)" 
+                      formula="Pipeline Deals / Qual Rate" 
                       calc={`${formatNum(pipelineDeals)} / ${qualRate}%`} 
                       result={formatNum(meetingsPerSdr)} 
                     />
                     <FormulaRow 
                       step={enableChurn ? "6" : "5"} 
                       title="Total Meetings" 
-                      formula="Meetings per SDR * SDRs" 
+                      formula="Math.ceil(Meetings per SDR * SDRs)" 
                       calc={`${formatNum(meetingsPerSdr)} * ${sdrCount || 0}`} 
                       result={formatNum(totalMeetings)} 
                     />
