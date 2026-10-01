@@ -54,12 +54,13 @@
     );
 
     function App() {
-      const [sdrCount, setSdrCount] = useState(2);
-      const [targetRevenue, setTargetRevenue] = useState(300000);
+      // Reverted to default values
+      const [sdrCount, setSdrCount] = useState(5);
+      const [targetRevenue, setTargetRevenue] = useState(150000);
       const [multiplier, setMultiplier] = useState(3);
       const [asp, setAsp] = useState(34000);
-      const [qualRate, setQualRate] = useState(33);
-      const [lastYearTotalMeetings, setLastYearTotalMeetings] = useState(250);
+      const [qualRate, setQualRate] = useState(24);
+      const [lastYearTotalMeetings, setLastYearTotalMeetings] = useState(248);
 
       const [enableChurn, setEnableChurn] = useState(false);
       const [churnRate, setChurnRate] = useState(39);
